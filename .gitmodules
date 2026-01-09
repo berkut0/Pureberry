@@ -4,3 +4,6 @@
 [submodule "sdk/pico-extras"]
 	path = sdk/pico-extras
 	url = https://github.com/raspberrypi/pico-extras.git
+[submodule "third_party/heavylib"]
+	path = third_party/heavylib
+	url = https://github.com/Wasted-Audio/heavylib.git

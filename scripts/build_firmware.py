@@ -26,6 +26,63 @@ def get_project_root():
     return script_dir.parent
 
 
+def get_hvcc_search_paths() -> List[str]:
+    """Get default hvcc abstraction search paths.
+
+    hvcc can resolve unknown objects as Pd abstractions if their directories are
+    provided via -p/--search_paths.
+
+    This repo primarily uses vanilla Pd objects, but plugdata ships a 'heavylib'
+    abstraction set (hv.*) that many patches rely on. If present, include it.
+    """
+    paths: List[Path] = []
+
+    # Allow override via env var (semicolon-separated is convenient on Windows)
+    env_paths = os.environ.get("HVCC_SEARCH_PATHS", "").strip()
+    if env_paths:
+        for p in env_paths.split(";"):
+            p = p.strip().strip('"')
+            if p:
+                paths.append(Path(p))
+
+    # Repo-local heavylib (recommended): avoids hardcoded absolute paths and
+    # keeps builds reproducible across machines.
+    project_root = get_project_root()
+    vendored_heavylib = project_root / "third_party" / "heavylib"
+    if vendored_heavylib.exists():
+        paths.append(vendored_heavylib)
+        # Note: hvcc does NOT recurse into subdirectories for abstractions, so we
+        # must include common subfolders explicitly.
+        paths.append(vendored_heavylib / "hv.lfo")
+        paths.append(vendored_heavylib / "hv.osc")
+        paths.append(vendored_heavylib / "hv.filters")
+
+    # Optional local plugdata abstractions path (convenience on Windows).
+    # Keep this as a fallback, but prefer the repo-local submodule above.
+    plugdata_abstractions = Path(r"C:\Users\Public\Documents\plugdata\Abstractions")
+    heavylib_dir = plugdata_abstractions / "heavylib"
+    paths.append(heavylib_dir)
+    paths.append(heavylib_dir / "hv.lfo")
+    paths.append(heavylib_dir / "hv.osc")
+    paths.append(heavylib_dir / "hv.filters")
+
+    # Filter to existing directories, keep stable order, de-dupe
+    existing: List[str] = []
+    seen = set()
+    for p in paths:
+        try:
+            if p.exists() and p.is_dir():
+                s = str(p)
+                if s not in seen:
+                    existing.append(s)
+                    seen.add(s)
+        except Exception:
+            # Ignore unreadable paths
+            continue
+
+    return existing
+
+
 def clean_build_directory(build_base_dir: Path, force: bool = False):
     """Clean build directory, handling permission errors gracefully."""
     if not build_base_dir.exists():
@@ -83,8 +140,17 @@ def compile_patch(pd_file: Path, build_dir: Path, patch_name: str) -> bool:
     print(f"Compiling PD patch: {pd_file}")
     
     try:
+        hvcc_cmd = ["hvcc", str(pd_file), "-o", str(build_dir), "-n", patch_name]
+
+        search_paths = get_hvcc_search_paths()
+        if search_paths:
+            print("hvcc search paths:")
+            for p in search_paths:
+                print(f"  - {p}")
+            hvcc_cmd.extend(["-p", *search_paths])
+
         result = subprocess.run(
-            ["hvcc", str(pd_file), "-o", str(build_dir), "-n", patch_name],
+            hvcc_cmd,
             check=True,
             capture_output=True,
             text=True
@@ -92,7 +158,11 @@ def compile_patch(pd_file: Path, build_dir: Path, patch_name: str) -> bool:
         print("[OK] hvcc compilation successful")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"[ERROR] hvcc compilation failed: {e.stderr}")
+        print("[ERROR] hvcc compilation failed")
+        if e.stdout:
+            print(e.stdout)
+        if e.stderr:
+            print(e.stderr)
         return False
     except FileNotFoundError:
         print("[ERROR] hvcc not found. Make sure it's installed and in PATH.")
