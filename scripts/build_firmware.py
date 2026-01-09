@@ -26,15 +26,54 @@ def get_project_root():
     return script_dir.parent
 
 
-def create_build_dir(patch_name: str) -> Path:
-    """Create a temporary build directory for this patch."""
+def clean_build_directory(build_base_dir: Path, force: bool = False):
+    """Clean build directory, handling permission errors gracefully."""
+    if not build_base_dir.exists():
+        return True
+    
+    try:
+        shutil.rmtree(build_base_dir)
+        return True
+    except PermissionError as e:
+        if force:
+            print(f"[WARNING] Could not delete {build_base_dir}: {e}")
+            print("  Some files may be locked. Trying to continue...")
+            return False
+        else:
+            print(f"[ERROR] Could not delete {build_base_dir}: {e}")
+            print("  Please close any programs using files in this directory")
+            return False
+    except Exception as e:
+        print(f"[WARNING] Error cleaning build directory: {e}")
+        return False
+
+
+def create_build_dir(patch_name: str, output_dir: Path = None) -> Path:
+    """Create a build directory for this patch.
+    
+    Args:
+        patch_name: Name of the patch (used as subdirectory name)
+        output_dir: Optional output directory. If None, uses project_root/build
+    
+    Returns:
+        Path to the build directory for this patch
+    """
     project_root = get_project_root()
-    build_dir = project_root / "build" / patch_name
     
-    # Clean build directory if it exists
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
+    if output_dir is None:
+        # Default: use build/ directory in project root
+        build_base_dir = project_root / "build"
+    else:
+        build_base_dir = Path(output_dir)
     
+    # Clean entire build directory before starting (like rp2040-playground)
+    if build_base_dir.exists():
+        print(f"Cleaning build directory: {build_base_dir}")
+        if not clean_build_directory(build_base_dir, force=True):
+            print("[WARNING] Some files could not be deleted, continuing anyway...")
+    
+    # Create build directory for this specific patch
+    build_dir = build_base_dir / patch_name
     build_dir.mkdir(parents=True, exist_ok=True)
     return build_dir
 
@@ -73,11 +112,39 @@ def copy_core_project(build_dir: Path, heavy_dir: Path) -> bool:
     
     print("Copying core project...")
     try:
-        shutil.copytree(core_dir, firmware_dir)
+        # Remove existing firmware directory if it exists (partial cleanup)
+        if firmware_dir.exists():
+            try:
+                # Try to remove, but don't fail if some files are locked
+                shutil.rmtree(firmware_dir, ignore_errors=True)
+            except Exception:
+                pass  # Ignore errors
+        
+        # Use copytree with dirs_exist_ok for Python 3.8+
+        try:
+            shutil.copytree(core_dir, firmware_dir, dirs_exist_ok=True)
+        except TypeError:
+            # Fallback for Python < 3.8
+            if firmware_dir.exists():
+                shutil.rmtree(firmware_dir)
+            shutil.copytree(core_dir, firmware_dir)
         
         # Copy Heavy files to firmware/heavy directory
         heavy_dest = firmware_dir / "heavy"
-        shutil.copytree(heavy_dir, heavy_dest)
+        if heavy_dest.exists():
+            try:
+                shutil.rmtree(heavy_dest, ignore_errors=True)
+            except Exception:
+                pass  # Ignore errors
+        
+        try:
+            shutil.copytree(heavy_dir, heavy_dest, dirs_exist_ok=True)
+        except TypeError:
+            # Fallback for Python < 3.8
+            if heavy_dest.exists():
+                shutil.rmtree(heavy_dest, ignore_errors=True)
+            shutil.copytree(heavy_dir, heavy_dest)
+        
         print("[OK] Core project and Heavy files copied")
         return True
     except Exception as e:
@@ -338,7 +405,7 @@ def build_firmware(firmware_dir: Path, verbose: bool = False) -> bool:
             "-G", "Ninja",  # Use Ninja generator (can be installed via pip)
             "-S", str(firmware_dir),
             "-B", str(cmake_build_dir),
-            "-DPICO_BOARD=pico"
+            "-DPICO_BOARD=waveshare_rp2350_zero"  # RP2350-Zero board
         ]
         
         # Prefer GCC over Clang for host tools compilation (pioasm, picotool)
@@ -434,7 +501,7 @@ def main():
         "-o", "--output",
         type=str,
         default=None,
-        help="Output directory (default: build/<patch_name>)"
+        help="Output directory for build artifacts (default: build/ in project root)"
     )
     parser.add_argument(
         "-n", "--name",
@@ -451,6 +518,18 @@ def main():
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        default=True,
+        help="Clean build directory before building (default: True)"
+    )
+    parser.add_argument(
+        "--no-clean",
+        dest="clean",
+        action="store_false",
+        help="Don't clean build directory before building"
     )
     
     args = parser.parse_args()
@@ -471,8 +550,24 @@ def main():
         print("[ERROR] Could not determine patch name")
         sys.exit(1)
     
-    # Create build directory
-    build_dir = create_build_dir(patch_name)
+    # Determine output directory
+    output_dir = None
+    if args.output:
+        output_dir = Path(args.output).resolve()
+        print(f"Using custom output directory: {output_dir}")
+    
+    # Create build directory (with optional cleaning)
+    if args.clean:
+        build_dir = create_build_dir(patch_name, output_dir)
+    else:
+        project_root = get_project_root()
+        if output_dir is None:
+            build_base_dir = project_root / "build"
+        else:
+            build_base_dir = Path(output_dir)
+        build_dir = build_base_dir / patch_name
+        build_dir.mkdir(parents=True, exist_ok=True)
+    
     print(f"Build directory: {build_dir}")
     
     # Compile PD patch with hvcc

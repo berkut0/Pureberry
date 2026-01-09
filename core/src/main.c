@@ -125,30 +125,30 @@ int main() {
     const audio_format_t *output_format = audio_i2s_setup(&audio_format, &i2s_config);
     if (output_format == NULL) {
         printf("ERROR: Failed to setup I2S audio\n");
-        return -1;
+        printf("Continuing without audio...\n");
+        // Don't return -1, continue to main loop for debugging
     }
     
     printf("I2S audio setup successful\n");
     printf("  Sample rate: %d Hz\n", output_format->sample_freq);
     printf("  Format: %d, Channels: %d\n", output_format->format, output_format->channel_count);
     
-    // Create audio buffer pool for output
-    audio_pool = audio_new_producer_pool(&audio_buffer_format, 3, AUDIO_BLOCK_SIZE);
-    if (audio_pool == NULL) {
-        printf("ERROR: Failed to create audio buffer pool\n");
-        return -1;
+    // Create audio buffer pool for output (only if I2S setup succeeded)
+    if (output_format != NULL) {
+        audio_pool = audio_new_producer_pool(&audio_buffer_format, 3, AUDIO_BLOCK_SIZE);
+        if (audio_pool == NULL) {
+            printf("ERROR: Failed to create audio buffer pool\n");
+        } else {
+            // Connect audio producer to I2S output
+            if (!audio_i2s_connect(audio_pool)) {
+                printf("ERROR: Failed to connect audio to I2S\n");
+            } else {
+                // Enable I2S audio output
+                audio_i2s_set_enabled(true);
+                printf("Audio I2S connected and enabled\n");
+            }
+        }
     }
-    
-    // Connect audio producer to I2S output
-    if (!audio_i2s_connect(audio_pool)) {
-        printf("ERROR: Failed to connect audio to I2S\n");
-        return -1;
-    }
-    
-    // Enable I2S audio output
-    audio_i2s_set_enabled(true);
-    
-    printf("Audio I2S connected and enabled\n");
     
     // TODO: Initialize Heavy context
     // heavy_context = hv_heavy_new((double)SAMPLE_RATE);
@@ -161,10 +161,19 @@ int main() {
     printf("Entering main loop...\n");
     
     // Main loop - feed audio buffers
+    uint32_t loop_count = 0;
     while (true) {
-        audio_producer_task();
+        if (audio_pool != NULL) {
+            audio_producer_task();
+        } else {
+            // If audio not initialized, just blink or print status
+            if (loop_count % 10000 == 0) {
+                printf("Running without audio (loop: %lu)\n", loop_count);
+            }
+        }
         // Small delay to prevent tight loop
         sleep_us(100);
+        loop_count++;
     }
     
     // Cleanup (unreachable in current implementation)
