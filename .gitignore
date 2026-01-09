@@ -30,8 +30,8 @@ ENV/
 *~
 
 # Cursor IDE
-.cursor/cache/
-.cursor/tmp/
+.cursor/
+*.mdc
 
 # OS
 .DS_Store
