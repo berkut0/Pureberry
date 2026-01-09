@@ -283,6 +283,10 @@ def update_main_c(firmware_dir: Path, patch_name: str) -> bool:
     
     # Uncomment context creation (handle both formats)
     content = content.replace(
+        f"    // heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);",
+        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
+    )
+    content = content.replace(
         "    // heavy_context = hv_heavy_new(SAMPLE_RATE);",
         f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
     )

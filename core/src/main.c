@@ -22,9 +22,13 @@
 #define AUDIO_BLOCK_SIZE 64  // Heavy default block size
 #define AUDIO_BUFFER_SIZE (AUDIO_BLOCK_SIZE * 2)  // Stereo
 
-// I2S pin configuration
-#define I2S_DATA_PIN 9
-#define I2S_CLOCK_PIN_BASE 10  // BCLK pin (LRCLK will be CLOCK_PIN_BASE, BCLK will be CLOCK_PIN_BASE+1)
+// I2S pin configuration for PCM5102A
+// PCM5102A connections: DIN=26, BCK=27, LCK=28
+// Default order: CLOCK_PIN_BASE=LRCLK, CLOCK_PIN_BASE+1=BCLK
+// We need swapped order: CLOCK_PIN_BASE=BCLK, CLOCK_PIN_BASE+1=LRCLK
+#define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 1  // Enable swapped clock pin order
+#define I2S_DATA_PIN 26        // DIN (data input) on PCM5102A
+#define I2S_CLOCK_PIN_BASE 27  // Base for clock pins: CLOCK_PIN_BASE=BCK (27), CLOCK_PIN_BASE+1=LCK (28)
 
 // Audio format
 static const audio_format_t audio_format = {
@@ -51,7 +55,7 @@ static const audio_i2s_config_t i2s_config = {
 static audio_buffer_pool_t *audio_pool = NULL;
 
 // Heavy context (will be initialized from generated code)
-// static HeavyContextInterface *heavy_context = NULL;
+static HeavyContextInterface *heavy_context = NULL;
 
 /**
  * Convert 16-bit integer samples to float (-1.0 to 1.0)
@@ -92,20 +96,45 @@ static void audio_producer_task(void) {
         return;
     }
     
-    // TODO: Process audio through Heavy and fill buffer
-    // For now, fill with silence
+    // Process audio through Heavy and fill buffer
     int16_t *samples = (int16_t *)buffer->buffer->bytes;
-    size_t sample_count = buffer->max_sample_count;
+    // In pico-extras audio buffers, sample_count is samples per channel for stereo
+    // So for stereo, total interleaved samples = sample_count * 2
+    size_t samples_per_channel = buffer->max_sample_count;
     
-    // Convert Heavy output to int16 samples
-    // float audio_out_buffer[AUDIO_BUFFER_SIZE];
-    // hv_processInline(heavy_context, NULL, audio_out_buffer, AUDIO_BLOCK_SIZE);
-    // float_to_int16(audio_out_buffer, samples, sample_count);
+    if (heavy_context != NULL) {
+        // Heavy processes in blocks of AUDIO_BLOCK_SIZE samples per channel
+        size_t blocks_to_process = (samples_per_channel + AUDIO_BLOCK_SIZE - 1) / AUDIO_BLOCK_SIZE;
+        
+        float audio_out_buffer[AUDIO_BUFFER_SIZE];
+        
+        // Process each block
+        for (size_t block = 0; block < blocks_to_process; block++) {
+            size_t block_size = AUDIO_BLOCK_SIZE;
+            if (block == blocks_to_process - 1) {
+                // Last block might be smaller
+                block_size = samples_per_channel - (block * AUDIO_BLOCK_SIZE);
+            }
+            
+            // Use interleaved processing for stereo (L, R, L, R, ...)
+            // This matches the I2S format
+            // block_size is samples per channel, so interleaved buffer will have block_size * 2 samples
+            hv_processInlineInterleaved(heavy_context, NULL, audio_out_buffer, block_size);
+            
+            // Convert float samples to int16 for I2S (already interleaved: L, R, L, R, ...)
+            // audio_out_buffer has block_size * 2 samples (stereo interleaved)
+            // samples buffer also expects interleaved format
+            float_to_int16(audio_out_buffer, 
+                          samples + (block * AUDIO_BLOCK_SIZE * 2), 
+                          block_size * 2);  // Stereo: block_size samples per channel * 2 channels
+        }
+    } else {
+        // If Heavy not initialized, fill with silence
+        // sample_count is per channel, so total samples = sample_count * 2 for stereo
+        memset(samples, 0, samples_per_channel * 2 * sizeof(int16_t));
+    }
     
-    // For now, fill with silence
-    memset(samples, 0, sample_count * sizeof(int16_t) * 2);  // Stereo
-    
-    buffer->sample_count = sample_count;
+    buffer->sample_count = samples_per_channel;
     
     // Give the buffer back to the pool
     give_audio_buffer(audio_pool, buffer);
@@ -150,8 +179,8 @@ int main() {
         }
     }
     
-    // TODO: Initialize Heavy context
-    // heavy_context = hv_heavy_new((double)SAMPLE_RATE);
+    // Initialize Heavy context (will be updated by build script with correct patch name)
+    // heavy_context = hv_heavy_compiler_base_test_new((double)SAMPLE_RATE);
     // if (heavy_context == NULL) {
     //     printf("ERROR: Failed to create Heavy context\n");
     //     return -1;
