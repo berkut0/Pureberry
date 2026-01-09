@@ -189,14 +189,23 @@ def update_main_c(firmware_dir: Path, patch_name: str) -> bool:
     with open(main_file, 'r', encoding='utf-8') as f:
         content = f.read()
     
-    # Uncomment Heavy includes
+    # Uncomment Heavy includes (use correct path - heavy directory is in include path)
     content = content.replace(
         "// #include \"Heavy_heavy.h\"",
-        f"#include \"heavy/Heavy_{patch_name}.h\""
+        f"#include \"Heavy_{patch_name}.h\""
     )
     content = content.replace(
         "// #include \"HvHeavy.h\"",
-        "#include \"heavy/HvHeavy.h\""
+        "#include \"HvHeavy.h\""
+    )
+    # Also handle if already uncommented but with wrong path
+    content = content.replace(
+        f"#include \"heavy/Heavy_{patch_name}.h\"",
+        f"#include \"Heavy_{patch_name}.h\""
+    )
+    content = content.replace(
+        "#include \"heavy/HvHeavy.h\"",
+        "#include \"HvHeavy.h\""
     )
     
     # Uncomment Heavy context initialization
@@ -205,10 +214,14 @@ def update_main_c(firmware_dir: Path, patch_name: str) -> bool:
         f"static HeavyContextInterface *heavy_context = NULL;"
     )
     
-    # Uncomment context creation
+    # Uncomment context creation (handle both formats)
     content = content.replace(
         "    // heavy_context = hv_heavy_new(SAMPLE_RATE);",
-        f"    heavy_context = hv_{patch_name}_new(SAMPLE_RATE);"
+        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
+    )
+    content = content.replace(
+        "    // heavy_context = hv_heavy_new((double)SAMPLE_RATE);",
+        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
     )
     content = content.replace(
         "    // if (heavy_context == NULL) {",
@@ -228,14 +241,46 @@ def update_main_c(firmware_dir: Path, patch_name: str) -> bool:
     )
     content = content.replace(
         "    // printf(\"Heavy context created (sample rate: %.1f Hz)\\n\", SAMPLE_RATE);",
-        "    printf(\"Heavy context created (sample rate: %.1f Hz)\\n\", SAMPLE_RATE);"
+        f"    printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);"
+    )
+    content = content.replace(
+        "    // printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);",
+        f"    printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);"
     )
     
-    # Uncomment process call (will need proper implementation later)
-    # content = content.replace(
-    #     "        // hv_process(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);",
-    #     "        hv_process(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);"
-    # )
+    # Uncomment audio processing in loop
+    content = content.replace(
+        "        // Convert I2S samples (int16) to float for Heavy processing",
+        "        // Convert I2S samples (int16) to float for Heavy processing"
+    )
+    content = content.replace(
+        "        // int16_to_float(i2s_in_buffer, audio_in_buffer, AUDIO_BUFFER_SIZE);",
+        "        int16_to_float(i2s_in_buffer, audio_in_buffer, AUDIO_BUFFER_SIZE);"
+    )
+    content = content.replace(
+        "        // TODO: Process audio through Heavy",
+        "        // Process audio through Heavy"
+    )
+    content = content.replace(
+        "        // hv_processInline(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);",
+        f"        hv_processInline(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);"
+    )
+    content = content.replace(
+        "        // Convert Heavy output (float) back to I2S samples (int16)",
+        "        // Convert Heavy output (float) back to I2S samples (int16)"
+    )
+    content = content.replace(
+        "        // float_to_int16(audio_out_buffer, i2s_out_buffer, AUDIO_BUFFER_SIZE);",
+        "        float_to_int16(audio_out_buffer, i2s_out_buffer, AUDIO_BUFFER_SIZE);"
+    )
+    content = content.replace(
+        "        // TODO: Write audio from i2s_out_buffer to I2S",
+        "        // Write audio from i2s_out_buffer to I2S"
+    )
+    content = content.replace(
+        "        // i2s_write_blocking(i2s_instance, i2s_out_buffer, I2S_BUFFER_SIZE);",
+        "        i2s_write_blocking(i2s_instance, i2s_out_buffer, I2S_BUFFER_SIZE);"
+    )
     
     # Uncomment cleanup
     content = content.replace(
@@ -267,26 +312,72 @@ def build_firmware(firmware_dir: Path, verbose: bool = False) -> bool:
     cmake_build_dir = firmware_dir / "build"
     cmake_build_dir.mkdir(exist_ok=True)
     
-    # Check for PICO_SDK_PATH
+    # Determine PICO_SDK_PATH
+    # Priority: 1) Local submodule (preferred for version compatibility), 2) Environment variable
+    project_root = get_project_root()
+    local_sdk_path = project_root / "sdk" / "pico-sdk"
     pico_sdk_path = os.environ.get("PICO_SDK_PATH")
-    if not pico_sdk_path:
-        print("[WARNING] PICO_SDK_PATH not set. CMake may fail.")
-        print("  Set it with: set PICO_SDK_PATH=<path_to_pico_sdk>")
+    
+    # Prefer local submodule if available (ensures SDK 2.0+ compatibility with pico-extras)
+    if local_sdk_path.exists() and (local_sdk_path / "pico_sdk_init.cmake").exists():
+        pico_sdk_path = str(local_sdk_path.resolve())
+        print(f"Using local pico-sdk from submodule: {pico_sdk_path}")
+    elif pico_sdk_path:
+        print(f"Using PICO_SDK_PATH from environment: {pico_sdk_path}")
+        print("[WARNING] Consider using local submodule for better version compatibility")
+    else:
+        print("[WARNING] PICO_SDK_PATH not set and local SDK not found.")
+        print(f"  Expected SDK at: {local_sdk_path}")
+        print("  Initialize submodule with: git submodule update --init --recursive")
+        print("  Or set PICO_SDK_PATH environment variable")
     
     try:
-        # Configure CMake
+        # Configure CMake with Ninja generator (Python-friendly)
         cmake_args = [
             "cmake",
+            "-G", "Ninja",  # Use Ninja generator (can be installed via pip)
             "-S", str(firmware_dir),
             "-B", str(cmake_build_dir),
             "-DPICO_BOARD=pico"
         ]
         
+        # Prefer GCC over Clang for host tools compilation (pioasm, picotool)
+        # This avoids issues with old Clang versions on Windows
+        # Set environment variables so subprojects inherit them
+        import shutil
+        gcc_path = shutil.which("gcc")
+        gxx_path = shutil.which("g++")
+        if gcc_path and gxx_path:
+            # Set environment variables for subprojects
+            os.environ["CC"] = gcc_path
+            os.environ["CXX"] = gxx_path
+            cmake_args.extend([
+                "-DCMAKE_C_COMPILER=gcc",
+                "-DCMAKE_CXX_COMPILER=g++"
+            ])
+            print(f"Using GCC for host tools: {gcc_path}")
+        
+        # Set PICO_SDK_PATH if we determined it
+        if pico_sdk_path:
+            cmake_args.append(f"-DPICO_SDK_PATH={pico_sdk_path}")
+        
+        # Set PICO_EXTRAS_PATH to local submodule
+        local_extras_path = project_root / "sdk" / "pico-extras"
+        if local_extras_path.exists() and (local_extras_path / "CMakeLists.txt").exists():
+            cmake_args.append(f"-DPICO_EXTRAS_PATH={local_extras_path.resolve()}")
+        
+        # Prepare environment with compiler settings
+        env = os.environ.copy()
+        if gcc_path and gxx_path:
+            env["CC"] = gcc_path
+            env["CXX"] = gxx_path
+        
         result = subprocess.run(
             cmake_args,
             check=True,
             capture_output=not verbose,
-            text=True
+            text=True,
+            env=env
         )
         
         if verbose and result.stdout:

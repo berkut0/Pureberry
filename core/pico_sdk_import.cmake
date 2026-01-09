@@ -1,21 +1,33 @@
 # This is a copy of <PICO_SDK_PATH>/external/pico_sdk_import.cmake
+# Modified to prioritize local SDK from git submodule
 
 # This can be dropped into an external project to help locate this SDK
 # It should be include()ed prior to project()
 
+# First, check for local SDK submodule (relative to this file's location)
+get_filename_component(CMAKE_CURRENT_LIST_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
+get_filename_component(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(LOCAL_SDK_PATH "${PROJECT_ROOT_DIR}/sdk/pico-sdk")
+
+if (NOT PICO_SDK_PATH AND EXISTS "${LOCAL_SDK_PATH}/pico_sdk_init.cmake")
+    set(PICO_SDK_PATH "${LOCAL_SDK_PATH}")
+    message(STATUS "Using local pico-sdk from submodule: ${PICO_SDK_PATH}")
+endif()
+
+# Check environment variable (only if local SDK not found)
 if (DEFINED ENV{PICO_SDK_PATH} AND (NOT PICO_SDK_PATH))
     set(PICO_SDK_PATH $ENV{PICO_SDK_PATH})
-    message("Using PICO_SDK_PATH from environment ('${PICO_SDK_PATH}')")
+    message(STATUS "Using PICO_SDK_PATH from environment ('${PICO_SDK_PATH}')")
 endif()
 
 if (DEFINED ENV{PICO_SDK_FETCH_FROM_GIT} AND (NOT PICO_SDK_FETCH_FROM_GIT))
     set(PICO_SDK_FETCH_FROM_GIT $ENV{PICO_SDK_FETCH_FROM_GIT})
-    message("Using PICO_SDK_FETCH_FROM_GIT from environment ('${PICO_SDK_FETCH_FROM_GIT}')")
+    message(STATUS "Using PICO_SDK_FETCH_FROM_GIT from environment ('${PICO_SDK_FETCH_FROM_GIT}')")
 endif()
 
 if (DEFINED ENV{PICO_SDK_FETCH_FROM_GIT_PATH} AND (NOT PICO_SDK_FETCH_FROM_GIT_PATH))
     set(PICO_SDK_FETCH_FROM_GIT_PATH $ENV{PICO_SDK_FETCH_FROM_GIT_PATH})
-    message("Using PICO_SDK_FETCH_FROM_GIT_PATH from environment ('${PICO_SDK_FETCH_FROM_GIT_PATH}')")
+    message(STATUS "Using PICO_SDK_FETCH_FROM_GIT_PATH from environment ('${PICO_SDK_FETCH_FROM_GIT_PATH}')")
 endif()
 
 set(PICO_SDK_PATH "${PICO_SDK_PATH}" CACHE PATH "Path to the Raspberry Pi Pico SDK")

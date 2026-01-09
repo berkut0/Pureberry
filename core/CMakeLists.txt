@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.13)
 # Include pico_sdk_import.cmake from the project root
 include(pico_sdk_import.cmake)
 
+# Include pico_extras_import.cmake for audio I2S support
+include(pico_extras_import.cmake)
+
 project(rp2350_puredata_firmware)
 
 # Initialize the Pico SDK
@@ -46,10 +49,13 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
 target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_stdlib
     pico_sync
-    hardware_i2s
     hardware_dma
     hardware_pwm
     hardware_clocks
+    hardware_pio
+    hardware_irq
+    pico_audio
+    pico_audio_i2s
 )
 
 # Enable USB output, remove uf2 output

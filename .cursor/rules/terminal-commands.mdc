@@ -67,3 +67,16 @@ When executing terminal commands through Cursor, be aware of the following impor
 - Always verify you're in the correct project root before running build scripts.
 - Use absolute paths in build scripts to avoid directory confusion.
 - Test build scripts incrementally to catch directory/path issues early.
+
+### Code and Commit Language Standards
+
+- **All code, comments, and commit messages must be in English**
+- Code comments should be written in English for international compatibility
+- Git commit messages must be in English with clear, descriptive messages
+- Function names, variable names, and documentation strings should use English
+- Only user-facing documentation (README, plans, discussions) may use Russian
+- When creating commits, use conventional commit format in English:
+  - `feat: add feature description`
+  - `fix: fix bug description`
+  - `docs: update documentation`
+  - `refactor: refactor code description`
