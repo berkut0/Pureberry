@@ -136,11 +136,17 @@ def create_build_dir(patch_name: str, output_dir: Path = None) -> Path:
 
 
 def compile_patch(pd_file: Path, build_dir: Path, patch_name: str) -> bool:
-    """Compile PD patch using hvcc."""
+    """Compile PD patch using hvcc.
+    
+    Note: Always use 'patch' as the Heavy project name for simplicity.
+    This way all generated files have consistent names (Heavy_patch.h, hv_patch_new, etc.)
+    regardless of the input .pd filename.
+    """
     print(f"Compiling PD patch: {pd_file}")
     
     try:
-        hvcc_cmd = ["hvcc", str(pd_file), "-o", str(build_dir), "-n", patch_name]
+        # Always use 'patch' as project name for consistent generated filenames
+        hvcc_cmd = ["hvcc", str(pd_file), "-o", str(build_dir), "-n", "patch"]
 
         search_paths = get_hvcc_search_paths()
         if search_paths:
@@ -306,6 +312,10 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
         replacement_include = f"\\1{heavy_include}\n"
         content = re.sub(include_pattern, replacement_include, content, flags=re.DOTALL)
     
+    # Note: We always compile patches with Heavy project name "patch".
+    # That means the firmware code can always include Heavy_patch.h and call hv_patch_new/hv_patch_free.
+    # No per-patch compile definitions or source-file rewriting is necessary.
+    
     # Write updated CMakeLists.txt
     with open(cmake_file, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -314,138 +324,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     return True
 
 
-def update_main_c(firmware_dir: Path, patch_name: str) -> bool:
-    """Update main.c to include Heavy headers and initialize context."""
-    main_file = firmware_dir / "src" / "main.c"
-    
-    if not main_file.exists():
-        print(f"[ERROR] main.c not found: {main_file}")
-        return False
-    
-    # Read main.c
-    with open(main_file, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Uncomment Heavy includes (use correct path - heavy directory is in include path)
-    content = content.replace(
-        "// #include \"Heavy_heavy.h\"",
-        f"#include \"Heavy_{patch_name}.h\""
-    )
-    content = content.replace(
-        "// #include \"HvHeavy.h\"",
-        "#include \"HvHeavy.h\""
-    )
-    # Also handle if already uncommented but with wrong path
-    content = content.replace(
-        f"#include \"heavy/Heavy_{patch_name}.h\"",
-        f"#include \"Heavy_{patch_name}.h\""
-    )
-    content = content.replace(
-        "#include \"heavy/HvHeavy.h\"",
-        "#include \"HvHeavy.h\""
-    )
-    
-    # Uncomment Heavy context initialization
-    content = content.replace(
-        "// static HeavyContextInterface *heavy_context = NULL;",
-        f"static HeavyContextInterface *heavy_context = NULL;"
-    )
-    
-    # Uncomment context creation (handle both formats)
-    content = content.replace(
-        f"    // heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);",
-        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
-    )
-    content = content.replace(
-        "    // heavy_context = hv_heavy_new(SAMPLE_RATE);",
-        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
-    )
-    content = content.replace(
-        "    // heavy_context = hv_heavy_new((double)SAMPLE_RATE);",
-        f"    heavy_context = hv_{patch_name}_new((double)SAMPLE_RATE);"
-    )
-    content = content.replace(
-        "    // if (heavy_context == NULL) {",
-        "    if (heavy_context == NULL) {"
-    )
-    content = content.replace(
-        "    //     printf(\"ERROR: Failed to create Heavy context\\n\");",
-        "        printf(\"ERROR: Failed to create Heavy context\\n\");"
-    )
-    content = content.replace(
-        "    //     return -1;",
-        "        return -1;"
-    )
-    content = content.replace(
-        "    // }",
-        "    }"
-    )
-    content = content.replace(
-        "    // printf(\"Heavy context created (sample rate: %.1f Hz)\\n\", SAMPLE_RATE);",
-        f"    printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);"
-    )
-    content = content.replace(
-        "    // printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);",
-        f"    printf(\"Heavy context created (sample rate: %d Hz)\\n\", SAMPLE_RATE);"
-    )
-    
-    # Uncomment audio processing in loop
-    content = content.replace(
-        "        // Convert I2S samples (int16) to float for Heavy processing",
-        "        // Convert I2S samples (int16) to float for Heavy processing"
-    )
-    content = content.replace(
-        "        // int16_to_float(i2s_in_buffer, audio_in_buffer, AUDIO_BUFFER_SIZE);",
-        "        int16_to_float(i2s_in_buffer, audio_in_buffer, AUDIO_BUFFER_SIZE);"
-    )
-    content = content.replace(
-        "        // TODO: Process audio through Heavy",
-        "        // Process audio through Heavy"
-    )
-    content = content.replace(
-        "        // hv_processInline(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);",
-        f"        hv_processInline(heavy_context, audio_in_buffer, audio_out_buffer, AUDIO_BLOCK_SIZE);"
-    )
-    content = content.replace(
-        "        // Convert Heavy output (float) back to I2S samples (int16)",
-        "        // Convert Heavy output (float) back to I2S samples (int16)"
-    )
-    content = content.replace(
-        "        // float_to_int16(audio_out_buffer, i2s_out_buffer, AUDIO_BUFFER_SIZE);",
-        "        float_to_int16(audio_out_buffer, i2s_out_buffer, AUDIO_BUFFER_SIZE);"
-    )
-    content = content.replace(
-        "        // TODO: Write audio from i2s_out_buffer to I2S",
-        "        // Write audio from i2s_out_buffer to I2S"
-    )
-    content = content.replace(
-        "        // i2s_write_blocking(i2s_instance, i2s_out_buffer, I2S_BUFFER_SIZE);",
-        "        i2s_write_blocking(i2s_instance, i2s_out_buffer, I2S_BUFFER_SIZE);"
-    )
-    
-    # Uncomment cleanup
-    content = content.replace(
-        "    // if (heavy_context != NULL) {",
-        "    if (heavy_context != NULL) {"
-    )
-    content = content.replace(
-        "    //     hv_heavy_free(heavy_context);",
-        f"        hv_{patch_name}_free(heavy_context);"
-    )
-    content = content.replace(
-        "    // }",
-        "    }"
-    )
-    
-    # Write updated main.c
-    with open(main_file, 'w', encoding='utf-8') as f:
-        f.write(content)
-    
-    print("[OK] main.c updated")
-    return True
-
-
-def build_firmware(firmware_dir: Path, verbose: bool = False) -> bool:
+def build_firmware(firmware_dir: Path, verbose: bool = False, cmake_defines: List[str] = None) -> bool:
     """Build firmware using CMake."""
     print("Building firmware with CMake...")
     
@@ -506,6 +385,12 @@ def build_firmware(firmware_dir: Path, verbose: bool = False) -> bool:
         local_extras_path = project_root / "sdk" / "pico-extras"
         if local_extras_path.exists() and (local_extras_path / "CMakeLists.txt").exists():
             cmake_args.append(f"-DPICO_EXTRAS_PATH={local_extras_path.resolve()}")
+        
+        # Add any additional CMake defines
+        if cmake_defines:
+            for define in cmake_defines:
+                cmake_args.append(f"-D{define}")
+                print(f"CMake define: {define}")
         
         # Prepare environment with compiler settings
         env = os.environ.copy()
@@ -605,6 +490,13 @@ def main():
         action="store_false",
         help="Don't clean build directory before building"
     )
+    parser.add_argument(
+        "-D", "--define",
+        action="append",
+        dest="cmake_defines",
+        metavar="VAR=VALUE",
+        help="Pass CMake defines (e.g., -D ENABLE_WS2812=ON). Can be used multiple times."
+    )
     
     args = parser.parse_args()
     
@@ -659,16 +551,13 @@ def main():
     
     firmware_dir = build_dir / "firmware"
     
-    # Update CMakeLists.txt
+    # Update CMakeLists.txt (adds Heavy sources)
     if not update_cmake_lists(firmware_dir, patch_name):
         sys.exit(1)
     
-    # Update main.c
-    if not update_main_c(firmware_dir, patch_name):
-        sys.exit(1)
-    
     # Build firmware
-    if not build_firmware(firmware_dir, args.verbose):
+    cmake_defines = args.cmake_defines or []
+    if not build_firmware(firmware_dir, args.verbose, cmake_defines):
         print("[ERROR] Firmware build failed")
         sys.exit(1)
     

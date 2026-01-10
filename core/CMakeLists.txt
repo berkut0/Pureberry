@@ -15,6 +15,9 @@ pico_sdk_init()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# Optional features
+option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
+
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
 
@@ -22,6 +25,18 @@ add_executable(${PROJECT_NAME}.elf)
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
 )
+
+# Optional WS2812 support
+if(ENABLE_WS2812)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_WS2812)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/dev/ws2812.c
+    )
+    # Generate PIO header
+    pico_generate_pio_header(${PROJECT_NAME}.elf
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dev/ws2812.pio
+    )
+endif()
 
 # Heavy-generated source files will be added here by build script
 # They should be in the build directory under c/
@@ -41,6 +56,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
 # Include directories
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src
+    src/dev
     # Heavy-generated headers will be added here
     # ${HEAVY_SOURCE_DIR}
 )

@@ -1,0 +1,315 @@
+# Technical Documentation
+
+## Project Overview
+
+This project provides a build system for compiling Pure Data (Pd) patches into firmware for the Raspberry Pi RP2350 microcontroller. It leverages the RP2350's FPU and DSP capabilities to run real-time audio processing using the Heavy Compiler Collection (hvcc) to convert Pd patches into optimized C/C++ code.
+
+## Architecture
+
+### Components
+
+1. **Pure Data Patches** (`pd-patches/`)
+   - Source Pd patch files (`.pd` format)
+   - Compiled using `hvcc` into C/C++ code
+   - Supports Heavy-compatible abstractions from `heavylib` (e.g., `hv.osc~`, `hv.lfo`)
+
+2. **Heavy Compiler Collection (hvcc)**
+   - Python-based compiler that converts Pd patches to C/C++
+   - Generates optimized audio processing code
+   - Output: Heavy context interface and audio processing functions
+
+3. **Core Firmware** (`core/`)
+   - Base firmware project for RP2350
+   - I2S audio output using pico-extras
+   - Audio buffer management
+   - Integration with Heavy-generated code
+
+4. **Build Script** (`scripts/build_firmware.py`)
+   - Orchestrates the entire build process
+   - Compiles Pd patches with hvcc
+   - Integrates Heavy code with core firmware
+   - Builds final firmware using CMake/pico-sdk
+
+5. **SDK Components** (`sdk/`)
+   - `pico-sdk`: Raspberry Pi Pico SDK (version 2.2.0) as git submodule
+   - `pico-extras`: Additional libraries including I2S audio support as git submodule
+
+## Build Process
+
+### Step-by-Step Flow
+
+1. **PD Patch Compilation**
+   ```
+   hvcc <patch.pd> -o <build_dir> -n patch -p <search_paths>
+   ```
+   - Generates C/C++ code in `build/<patch_name>/c/`
+   - Creates Heavy context interface with a fixed name: `Heavy_patch.h/cpp`
+   - Generates audio processing functions
+   - Search paths (`-p`) configured automatically for heavylib abstractions:
+     - Checks for vendored `third_party/heavylib` submodule
+     - Falls back to plugdata installation path if submodule not found
+     - Supports custom paths via `HVCC_SEARCH_PATHS` environment variable
+
+2. **Core Project Integration**
+   - Core firmware copied to `build/<patch_name>/firmware/`
+   - Heavy-generated files copied to `firmware/heavy/`
+   - CMakeLists.txt updated to include Heavy sources
+   - Firmware uses a fixed Heavy API name: `hv_patch_new()` / `hv_patch_free()`
+
+3. **CMake Configuration**
+   - Configures build system with pico-sdk
+   - Links pico-extras for I2S audio
+   - Sets up ARM cross-compilation toolchain
+   - Generates build files using Ninja
+
+4. **Firmware Compilation**
+   - Compiles Heavy-generated C/C++ code
+   - Links with pico-sdk and pico-extras libraries
+   - Creates UF2 firmware file for RP2350
+
+### Build Script Features
+
+- **Automatic Cleanup**: Cleans build directory before compilation
+- **Submodule Management**: Automatically detects and uses local SDK submodules
+- **Error Handling**: Graceful handling of locked files on Windows
+- **Flexible Output**: Supports custom output directories via `-o` option
+- **Verbose Mode**: Optional verbose output for debugging
+- **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
+- **Context Integration**: Copies Heavy sources/headers into the firmware build and updates CMakeLists.txt to compile them
+
+## Audio Processing Pipeline
+
+### I2S Configuration
+
+- **Hardware**: PCM5102A DAC
+- **Pins**:
+  - DATA (DIN): GPIO 26
+  - BCLK: GPIO 27
+  - LRCLK (WS): GPIO 28
+- **Format**: 16-bit signed PCM, stereo, 48 kHz
+- **Clock Order**: Swapped (BCLK on CLOCK_PIN_BASE, LRCLK on CLOCK_PIN_BASE+1)
+
+### Audio Flow
+
+1. **Heavy Processing**
+   - Heavy context processes audio in blocks of 64 samples per channel
+   - Uses `hv_processInlineInterleaved()` for stereo interleaved format (L, R, L, R, ...)
+   - Output: Float samples in range [-1.0, 1.0]
+
+2. **Format Conversion**
+   - Float to int16 conversion: `float_to_int16()`
+   - Clamps to [-1.0, 1.0] range
+   - Converts to 16-bit signed integers
+
+3. **Buffer Management**
+   - Audio buffer pool with 3 buffers
+   - Each buffer: 64 samples per channel (128 total interleaved samples)
+   - Producer-consumer pattern for I2S DMA
+
+4. **I2S Output**
+   - PIO-based I2S implementation from pico-extras
+   - DMA transfers audio data to I2S hardware
+   - Continuous streaming to PCM5102A DAC
+
+## Hardware Requirements
+
+### Target Hardware
+- **Microcontroller**: Raspberry Pi RP2350 (RP2350-Zero board)
+- **Audio DAC**: PCM5102A (I2S interface)
+- **Connections**:
+  - PCM5102A DIN → RP2350 GPIO 26
+  - PCM5102A BCK → RP2350 GPIO 27
+  - PCM5102A LCK → RP2350 GPIO 28
+  - Common ground required
+
+### Development Tools
+- **Python 3.11+** with virtual environment
+- **CMake 3.13+**
+- **Ninja** build system (installed via pip)
+- **ARM GCC Toolchain** (arm-none-eabi-gcc 13.2+)
+- **Clang 18+** (for host tools compilation)
+
+## Software Dependencies
+
+### Python Packages
+- `hvcc>=0.15.0`: Pure Data to C/C++ compiler
+- `ninja>=1.13.0`: Build system
+
+### SDK Components
+- **pico-sdk 2.2.0+**: Core SDK for RP2350
+- **pico-extras**: Additional libraries including:
+  - `pico_audio`: Audio buffer management
+  - `pico_audio_i2s`: I2S audio output driver
+
+### Heavy Abstractions
+- **heavylib**: Heavy-compatible Pure Data abstractions
+  - Provided as git submodule in `third_party/heavylib`
+  - Contains abstractions like `hv.osc~`, `hv.lfo`, `hv.filters`, etc.
+  - Build script automatically configures search paths for hvcc
+  - Fallback: Uses plugdata installation path if submodule not available
+
+## File Structure
+
+```
+rp2350-puredata/
+├── core/                    # Core firmware project
+│   ├── src/
+│   │   └── main.c          # Main firmware entry point
+│   ├── CMakeLists.txt      # CMake configuration
+│   ├── pico_sdk_import.cmake
+│   └── pico_extras_import.cmake
+├── pd-patches/             # Pure Data patch files
+├── scripts/
+│   └── build_firmware.py   # Main build script
+├── sdk/                     # SDK submodules
+│   ├── pico-sdk/           # Raspberry Pi Pico SDK
+│   └── pico-extras/        # Additional libraries
+├── third_party/            # Third-party dependencies
+│   └── heavylib/           # Heavy-compatible abstractions (git submodule)
+├── build/                   # Build output directory
+├── requirements.txt         # Python dependencies
+└── README.md               # Project overview
+```
+
+## Key Technical Details
+
+### Heavy Integration
+
+Heavy generates a context interface for each patch:
+- `hv_patch_new(double sampleRate)`: Creates context (project name is fixed to `patch`)
+- `hv_processInlineInterleaved()`: Processes audio blocks
+- `hv_patch_free()`: Cleans up context
+
+The context processes audio in blocks of 64 samples per channel, matching Heavy's default block size.
+
+**Important**: The firmware code includes `Heavy_patch.h` and creates the Heavy context via `hv_patch_new()`. The build script does not rewrite source files; it only integrates the Heavy-generated sources into the build directory and updates the copied CMakeLists.txt.
+
+### Heavy-Firmware Message Exchange
+
+Heavy supports bidirectional communication between compiled Pd patches and firmware code via send hooks and receive messages.
+
+**Send Hooks (Pd → Firmware)**:
+- Pd patches use `[s <name> @hv_event]` objects to send messages to firmware
+- hvcc generates deterministic hash identifiers for each send channel name
+- Firmware registers a callback via `hv_setSendHook(heavy_context, hv_send_hook)` (C API) or `HeavyContextInterface::setSendHook()` (C++ API)
+- Hook is called synchronously during audio processing when send is triggered
+- Hook receives: send channel name (string), hash (uint32_t), and message payload (HvMessage*)
+- Message types: bang (event), float, symbol (string), list (array)
+- Hash computation: use `hv_stringToHash("send_name")` to compute hash from send channel name
+- Identification: use hash comparison for performance (`sendHash == hv_stringToHash("name")`), or string comparison for flexibility
+
+**Receive Messages (Firmware → Pd)**:
+- Firmware can send messages to Pd patches using `hv_sendMessageToReceiver()`
+- Requires receiver object `[r <name>]` in Pd patch
+- Messages can contain float values, bangs, or symbols
+- Useful for parameter updates, synchronization, or feedback
+
+**Message Flow**:
+1. Pd patch executes send object → hvcc-generated code calls send hook
+2. Firmware hook function receives message with channel identifier
+3. Firmware processes message (e.g., control GPIO, update state)
+4. Optional: Firmware sends response via receive message to Pd patch
+
+**Use Cases**: LED control, parameter updates, event synchronization, hardware feedback, visual indicators tied to audio processing.
+
+### Audio Buffer Format
+
+- **Format**: `AUDIO_BUFFER_FORMAT_PCM_S16` (16-bit signed PCM)
+- **Channels**: 2 (stereo)
+- **Sample Rate**: 48 kHz
+- **Buffer Size**: 64 samples per channel (128 total interleaved samples)
+- **Interleaved Format**: [L, R, L, R, ...]
+
+### Memory Layout
+
+- Audio buffers allocated in RAM
+- Heavy context and processing in RAM
+- Code and constants in flash
+- DMA transfers from RAM to I2S hardware
+
+### Performance Considerations
+
+- **Block Processing**: 64 samples per block = ~1.33 ms latency at 48 kHz
+- **DMA**: Hardware DMA transfers reduce CPU load
+- **PIO I2S**: Software I2S implementation using PIO state machine
+- **FPU**: RP2350's FPU enables efficient float processing
+
+## Build Configuration
+
+### CMake Variables
+
+- `PICO_BOARD=waveshare_rp2350_zero`: Target board
+- `PICO_SDK_PATH`: Path to pico-sdk (auto-detected from submodule)
+- `PICO_EXTRAS_PATH`: Path to pico-extras (auto-detected from submodule)
+- `PICO_TOOLCHAIN_PATH`: ARM GCC toolchain path (from environment)
+
+### Compiler Settings
+
+- **C Standard**: C11
+- **C++ Standard**: C17
+- **Optimization**: -O3 (Release mode)
+- **Target**: ARM Cortex-M33 (RP2350)
+
+## Troubleshooting
+
+### Common Issues
+
+1. **No audio output**
+   - Check I2S pin connections
+   - Verify PCM5102A power and ground
+   - Check audio buffer pool initialization
+
+2. **Distorted audio**
+   - Verify correct use of `hv_processInlineInterleaved()`
+   - Check sample_count interpretation (per channel vs total)
+   - Verify float-to-int16 conversion
+
+3. **Build failures**
+   - Ensure all submodules are initialized: `git submodule update --init --recursive`
+   - Check ARM toolchain is in PATH
+   - Verify Clang version (18+ recommended)
+   - For heavylib abstractions: Ensure `third_party/heavylib` submodule is initialized, or set `HVCC_SEARCH_PATHS` environment variable
+
+4. **No audio with hv.osc~ or other heavylib abstractions**
+   - Verify heavylib submodule is initialized: `git submodule update --init --recursive`
+   - Check that build script reports "hvcc search paths" in verbose output
+   - Ensure Heavy context is initialized in `core/src/main.c` (it should call `hv_patch_new()`)
+   - If using custom abstraction paths, set `HVCC_SEARCH_PATHS` environment variable (semicolon-separated on Windows)
+
+5. **Locked files on Windows**
+   - Close any programs accessing build directory
+   - Build script handles this gracefully with warnings
+
+6. **Heavy context initialization issues**
+   - If `heavy_context` is NULL, check that `hv_patch_new()` returns non-NULL and that `Heavy_patch.h` is present under `firmware/heavy/`
+   - Confirm hvcc was invoked with `-n patch` (fixed Heavy project name)
+
+## Heavy Abstractions Support
+
+### heavylib Integration
+
+The project supports Heavy-compatible abstractions from the `heavylib` library, which provides abstractions like:
+- `hv.osc~`: Oscillators (sine, saw, square, triangle)
+- `hv.lfo`: Low-frequency oscillators
+- `hv.filters`: Various filter types
+
+**Setup**:
+1. heavylib is included as a git submodule in `third_party/heavylib`
+2. Initialize with: `git submodule update --init --recursive`
+3. Build script automatically configures hvcc search paths
+
+**Search Path Resolution**:
+1. Primary: Checks for `third_party/heavylib` submodule
+2. Fallback: Uses plugdata installation path (`C:\Users\Public\Documents\plugdata\Abstractions\heavylib` on Windows)
+3. Custom: Can override via `HVCC_SEARCH_PATHS` environment variable
+
+**Note**: hvcc does not search recursively, so the build script explicitly adds subdirectories like `hv.osc`, `hv.lfo`, `hv.filters` to the search paths.
+
+## Future Improvements
+
+- Audio input support (ADC or I2S input)
+- MIDI support
+- USB audio device mode
+- Real-time parameter control
+- Multiple patch support
+- Performance profiling tools
