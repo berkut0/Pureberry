@@ -2,11 +2,18 @@
  * USB MIDI Implementation for RP2350 Pure Data Firmware
  * 
  * Receives MIDI messages via USB and forwards them to Pure Data patches
- * Supports: Note On/Off, Control Change, Pitch Bend, Program Change
+ * Uses Pure Data standard MIDI object format for compatibility:
+ * - notein: [note, velocity, channel] lists (velocity=0 for Note Off)
+ * - ctlin: [controller, value, channel] lists
+ * - bendin: [bend, channel] lists
+ * - pgmin: [program, channel] lists
+ * 
+ * Supports: Note On/Off, Control Change, Pitch Bend, Program Change, Aftertouch
  */
 
 #include "usb_midi.h"
 #include "tusb.h"
+#include "HvHeavy.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -56,56 +63,57 @@ static void process_midi_packet(const uint8_t packet[4]) {
 
     switch (msg_type) {
         case MIDI_NOTE_ON:
-            if (data2 > 0) { // Velocity > 0 = Note On
+            // Pure Data notein format: [note, velocity, channel]
+            // Note: velocity=0 is treated as Note Off in Pure Data
+            if (data2 > 0) {
                 midi_stats.note_on_count++;
-                
-                // Send to Pure Data: [r midi_note_on] receives (note, velocity, channel)
-                if (heavy_context != NULL) {
-                    hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_note_on"), (float)data1);
-                    hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_velocity"), (float)data2);
-                    hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-                    printf("[MIDI] Note On: note=%d vel=%d ch=%d (sent to Heavy)\n", data1, data2, channel);
-                } else {
-                    printf("[MIDI] Note On: note=%d vel=%d ch=%d (WARNING: heavy_context is NULL!)\n", data1, data2, channel);
-                }
-            } else { // Velocity = 0 is Note Off
+            } else {
                 midi_stats.note_off_count++;
-                
-                // Send to Pure Data: [r midi_note_off] receives (note, channel)
-                hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_note_off"), (float)data1);
-                hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-                
-                printf("[MIDI] Note Off: note=%d ch=%d\n", data1, channel);
+            }
+            
+            // Always send velocity (even 0 for Note Off) for Pure Data compatibility
+            // Use hv_sendMessageToReceiverFFF for [note, velocity, channel] list
+            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("notein"), 0.0,
+                    (double)data1, (double)data2, (double)channel)) {
+                printf("[MIDI] notein: note=%d vel=%d ch=%d\n", data1, data2, channel);
+            } else {
+                printf("[MIDI] notein: note=%d vel=%d ch=%d (queue full)\n", data1, data2, channel);
             }
             break;
 
         case MIDI_NOTE_OFF:
             midi_stats.note_off_count++;
             
-            // Send to Pure Data: [r midi_note_off] receives (note, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_note_off"), (float)data1);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] Note Off: note=%d ch=%d\n", data1, channel);
+            // Pure Data notein format: [note, velocity=0, channel]
+            // Send as [note, 0, channel] to match Pure Data notein behavior
+            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("notein"), 0.0,
+                    (double)data1, 0.0, (double)channel)) {
+                printf("[MIDI] notein: note=%d vel=0 ch=%d (Note Off)\n", data1, channel);
+            } else {
+                printf("[MIDI] notein: note=%d vel=0 ch=%d (Note Off, queue full)\n", data1, channel);
+            }
             break;
 
         case MIDI_CONTROL_CHANGE:
             midi_stats.cc_count++;
             
-            // Send to Pure Data: [r midi_cc] receives (cc_number, value, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_cc_num"), (float)data1);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_cc_val"), (float)data2);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] CC: cc=%d val=%d ch=%d\n", data1, data2, channel);
+            // Pure Data ctlin format: [controller, value, channel]
+            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("ctlin"), 0.0,
+                    (double)data1, (double)data2, (double)channel)) {
+                printf("[MIDI] ctlin: cc=%d val=%d ch=%d\n", data1, data2, channel);
+            } else {
+                printf("[MIDI] ctlin: cc=%d val=%d ch=%d (queue full)\n", data1, data2, channel);
+            }
             break;
 
         case MIDI_PROGRAM_CHANGE:
-            // Send to Pure Data: [r midi_program] receives (program, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_program"), (float)data1);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] Program Change: prog=%d ch=%d\n", data1, channel);
+            // Pure Data pgmin format: [program, channel]
+            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("pgmin"), 0.0,
+                    (double)data1, (double)channel)) {
+                printf("[MIDI] pgmin: prog=%d ch=%d\n", data1, channel);
+            } else {
+                printf("[MIDI] pgmin: prog=%d ch=%d (queue full)\n", data1, channel);
+            }
             break;
 
         case MIDI_PITCH_BEND:
@@ -113,31 +121,37 @@ static void process_midi_packet(const uint8_t packet[4]) {
             
             // Pitch bend is 14-bit: combine data1 (LSB) and data2 (MSB)
             int16_t bend_value = (data2 << 7) | data1;
-            // Convert to -1.0 to +1.0 range (center = 8192)
-            float bend_normalized = ((float)bend_value - 8192.0f) / 8192.0f;
+            // Convert to 0-16383 range (Pure Data bendin uses 0-16383, center = 8192)
+            // Pure Data bendin format: [bend, channel] where bend is 0-16383
+            double bend_pd = (double)bend_value;
             
-            // Send to Pure Data: [r midi_pitchbend] receives (value, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_pitchbend"), bend_normalized);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] Pitch Bend: val=%.3f ch=%d\n", bend_normalized, channel);
+            // Pure Data bendin format: [bend, channel]
+            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("bendin"), 0.0,
+                    bend_pd, (double)channel)) {
+                printf("[MIDI] bendin: bend=%.0f ch=%d\n", bend_pd, channel);
+            } else {
+                printf("[MIDI] bendin: bend=%.0f ch=%d (queue full)\n", bend_pd, channel);
+            }
             break;
 
         case MIDI_CHANNEL_AFTERTOUCH:
-            // Send to Pure Data: [r midi_aftertouch] receives (pressure, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_aftertouch"), (float)data1);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] Aftertouch: val=%d ch=%d\n", data1, channel);
+            // Pure Data touchin format: [pressure, channel]
+            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("touchin"), 0.0,
+                    (double)data1, (double)channel)) {
+                printf("[MIDI] touchin: pressure=%d ch=%d\n", data1, channel);
+            } else {
+                printf("[MIDI] touchin: pressure=%d ch=%d (queue full)\n", data1, channel);
+            }
             break;
 
         case MIDI_POLY_AFTERTOUCH:
-            // Send to Pure Data: [r midi_poly_aftertouch] receives (note, pressure, channel)
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_poly_note"), (float)data1);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_poly_pressure"), (float)data2);
-            hv_sendFloatToReceiver(heavy_context, hv_stringToHash("midi_channel"), (float)channel);
-            
-            printf("[MIDI] Poly Aftertouch: note=%d pressure=%d ch=%d\n", data1, data2, channel);
+            // Pure Data polytouchin format: [note, pressure, channel]
+            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("polytouchin"), 0.0,
+                    (double)data1, (double)data2, (double)channel)) {
+                printf("[MIDI] polytouchin: note=%d pressure=%d ch=%d\n", data1, data2, channel);
+            } else {
+                printf("[MIDI] polytouchin: note=%d pressure=%d ch=%d (queue full)\n", data1, data2, channel);
+            }
             break;
 
         default:

@@ -30,39 +30,80 @@ cmake -DENABLE_USB_MIDI=ON ..
 
 ## Using MIDI in Pure Data Patches
 
-When MIDI is enabled, the following receive objects automatically receive MIDI data:
+When MIDI is enabled, MIDI messages are sent to Pure Data using **standard Pure Data MIDI object format** for maximum compatibility. This allows you to easily port patches from desktop Pure Data to the RP2350.
 
-### Note Messages
+### Note Messages (notein)
 
 ```pd
-[r midi_note_on]     # Receives note number (0-127) when note pressed
-[r midi_note_off]    # Receives note number (0-127) when note released
-[r midi_velocity]    # Receives velocity (0-127) for note on
-[r midi_channel]     # Receives MIDI channel (0-15)
+[r notein]           # Receives [note, velocity, channel] list
+                     # Note On: velocity > 0
+                     # Note Off: velocity = 0
 ```
 
-### Control Change
-
+Example usage:
 ```pd
-[r midi_cc_num]      # Receives CC number (0-127)
-[r midi_cc_val]      # Receives CC value (0-127)
-[r midi_channel]     # Receives MIDI channel (0-15)
+[r notein]
+|
+[unpack f f f]       # Unpack: note, velocity, channel
+|  |  |
+|  |  [print channel]
+|  |
+|  [/ 127]           # Normalize velocity to 0-1
+|  |
+[mtof]               # Convert note to frequency
 ```
 
-### Pitch Bend
+### Control Change (ctlin)
 
 ```pd
-[r midi_pitchbend]   # Receives pitch bend (-1.0 to +1.0)
-[r midi_channel]     # Receives MIDI channel (0-15)
+[r ctlin]            # Receives [controller, value, channel] list
 ```
 
-### Other Messages
+Example usage:
+```pd
+[r ctlin]
+|
+[unpack f f f]       # Unpack: controller, value, channel
+|  |  |
+|  |  [print channel]
+|  |
+|  [/ 127]           # Normalize value to 0-1
+```
+
+### Pitch Bend (bendin)
 
 ```pd
-[r midi_program]           # Receives program change (0-127)
-[r midi_aftertouch]        # Receives channel aftertouch (0-127)
-[r midi_poly_note]         # Receives note for poly aftertouch
-[r midi_poly_pressure]     # Receives pressure for poly aftertouch
+[r bendin]           # Receives [bend, channel] list
+                     # bend: 0-16383 (center = 8192)
+```
+
+Example usage:
+```pd
+[r bendin]
+|
+[unpack f f]         # Unpack: bend, channel
+|  |
+|  [- 8192]          # Center at 0
+|  |
+[/ 8192]             # Normalize to -1.0 to +1.0
+```
+
+### Program Change (pgmin)
+
+```pd
+[r pgmin]            # Receives [program, channel] list
+```
+
+### Channel Aftertouch (touchin)
+
+```pd
+[r touchin]          # Receives [pressure, channel] list
+```
+
+### Poly Aftertouch (polytouchin)
+
+```pd
+[r polytouchin]      # Receives [note, pressure, channel] list
 ```
 
 ## Example Pure Data Patch
@@ -73,24 +114,35 @@ See `pd-patches/midi_synth_example.pd` for a complete example of a MIDI-controll
 
 ```pd
 #N canvas 0 0 450 300 12;
-#X obj 50 50 r midi_note_on;
-#X obj 50 100 mtof;
-#X obj 50 150 hv.osc~ sine;
-#X obj 50 200 *~;
-#X obj 150 50 r midi_velocity;
+#X obj 50 50 r notein;
+#X obj 50 100 unpack f f f;
+#X obj 50 150 mtof;
+#X obj 50 200 hv.osc~ sine;
+#X obj 50 250 *~;
 #X obj 150 100 / 127;
+#X obj 50 300 dac~;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
+#X connect 1 1 5 0;
 #X connect 2 0 3 0;
-#X connect 4 0 5 0;
-#X connect 5 0 3 1;
+#X connect 3 0 4 0;
+#X connect 5 0 4 1;
+#X connect 4 0 6 0;
+#X connect 4 0 6 1;
 ```
 
 This patch:
-1. Receives MIDI note on messages
-2. Converts MIDI note number to frequency
-3. Generates a sine wave at that frequency
-4. Scales output by velocity (0-1)
+1. Receives MIDI note messages via `[r notein]` as [note, velocity, channel] list
+2. Unpacks the list to get note, velocity, and channel separately
+3. Converts MIDI note number to frequency with `[mtof]`
+4. Generates a sine wave at that frequency
+5. Scales output by velocity (normalized to 0-1)
+6. Outputs to `[dac~]` for audio
+
+**Key points:**
+- Use `[unpack f f f]` to extract note, velocity, channel from `[r notein]`
+- Velocity = 0 means Note Off (you can filter these if needed)
+- This format matches standard Pure Data `[notein]` object behavior
 
 ## USB Device Information
 
@@ -175,8 +227,10 @@ while (true) {
 
 - Verify MIDI is being sent (test with MIDI monitor software)
 - Check firmware debug output via CDC for "[MIDI]" log messages
-- Ensure receive objects in Pure Data patch match names above
+- Ensure receive objects in Pure Data patch use standard names: `notein`, `ctlin`, `bendin`, `pgmin`
+- Use `[unpack]` to extract values from lists (e.g., `[unpack f f f]` for `[r notein]`)
 - Try simple test patch (see examples)
+- Note: Velocity = 0 in `notein` means Note Off - filter these if you only want Note On
 
 ### printf not working
 
