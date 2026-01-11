@@ -1,0 +1,17 @@
+#N canvas 0 0 800 600 12;
+#X text 20 20 USB MIDI Synthesizer Example;
+#X text 20 40 Demonstrates receiving MIDI and generating audio;
+#X obj 20 82 r midi_note_on;
+#X obj 20 120 mtof;
+#X obj 20 176 hv.osc~ sine;
+#X obj 20 236 dac~;
+#X obj 20 146 sig~;
+#X obj 140 82 loadbang;
+#X msg 140 108 220;
+#X connect 2 0 3 0;
+#X connect 3 0 6 0;
+#X connect 4 0 5 0;
+#X connect 4 0 5 1;
+#X connect 6 0 4 0;
+#X connect 7 0 8 0;
+#X connect 8 0 6 0;
