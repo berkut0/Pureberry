@@ -7,6 +7,12 @@
 
 #include "tusb.h"
 #include "pico/unique_id.h"
+#include "config.h"
+
+// Fallback for USB_MIDI_DEVICE_NAME if not defined in config.h
+#ifndef USB_MIDI_DEVICE_NAME
+#define USB_MIDI_DEVICE_NAME "Pure Data MIDI"
+#endif
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -133,7 +139,7 @@ char const *string_desc_arr[] = {
     "Pure Data Audio Device",      // 2: Product
     NULL,                          // 3: Serial (will use unique ID)
     "Pure Data Debug",             // 4: CDC Interface
-    "Pure Data MIDI",              // 5: MIDI Interface
+    USB_MIDI_DEVICE_NAME,          // 5: MIDI Interface (configurable via USB_MIDI_DEVICE_NAME)
 };
 
 static uint16_t _desc_str[32 + 1];

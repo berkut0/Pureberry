@@ -31,6 +31,22 @@
 // - [r polytouchin]     - receives [note, pressure, channel] list (poly aftertouch)
 //
 // These match Pure Data's standard MIDI objects for easy patch porting
+
+// USB MIDI Device Name
+// Customize the MIDI interface name that appears in your OS
+// Default: "Pure Data MIDI"
+//
+// To customize, define USB_MIDI_DEVICE_NAME before including this header:
+//   #define USB_MIDI_DEVICE_NAME "My Custom MIDI Device"
+//   #include "config.h"
+//
+// Or via CMake:
+//   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE USB_MIDI_DEVICE_NAME="My Custom MIDI Device")
+//
+#ifndef USB_MIDI_DEVICE_NAME
+#define USB_MIDI_DEVICE_NAME "Pure Data MIDI"
+#endif
+
 #endif
 
 #endif // CONFIG_H
