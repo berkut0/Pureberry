@@ -26,6 +26,13 @@
 #include "dev/ws2812.h"
 #endif
 
+// Optional USB MIDI support
+#ifdef ENABLE_USB_MIDI
+#include "tusb.h"
+#include "usb/usb_cdc.h"
+#include "usb/usb_midi.h"
+#endif
+
 // Audio configuration
 #define SAMPLE_RATE 48000
 #define AUDIO_BLOCK_SIZE 64  // Heavy default block size
@@ -148,15 +155,34 @@ static void audio_producer_task(void) {
 }
 
 int main() {
-    // Initialize stdio (USB serial)
+#ifdef ENABLE_USB_MIDI
+    // Custom TinyUSB initialization for CDC+MIDI
+    tusb_init();
+    
+    // Service USB immediately after init for enumeration
+    // Critical: USB must be serviced quickly for host to recognize device
+    for (int i = 0; i < 100; i++) {
+        tud_task();
+        sleep_ms(1);
+    }
+    
+    // Initialize USB CDC for printf
+    usb_cdc_init();
+    
+    printf("\n=== RP2350 Pure Data Firmware ===\n");
+    printf("USB MIDI Mode: CDC+MIDI composite device\n");
+    printf("Initializing...\n");
+#else
+    // Standard stdio initialization (pico_stdio_usb)
     stdio_init_all();
     
     // Wait a bit for USB serial to be ready
     sleep_ms(100);
     
     printf("\n=== RP2350 Pure Data Firmware ===\n");
+    printf("Standard Mode: CDC only (no MIDI)\n");
     printf("Initializing...\n");
-    
+#endif
     
     // Setup I2S audio output
     const audio_format_t *output_format = audio_i2s_setup(&audio_format, &i2s_config);
@@ -196,6 +222,11 @@ int main() {
     }
     printf("Heavy context created (sample rate: %d Hz)\n", SAMPLE_RATE);
     
+#ifdef ENABLE_USB_MIDI
+    // Initialize USB MIDI with Heavy context
+    usb_midi_init(heavy_context);
+#endif
+    
 #ifdef ENABLE_WS2812
     // Initialize WS2812 and register send hook for Pure Data control
     if (ws2812_init_with_hook(WS2812_PIN, WS2812_NUM_LEDS, heavy_context)) {
@@ -207,9 +238,17 @@ int main() {
     
     printf("Entering main loop...\n");
     
-    // Main loop - feed audio buffers
+    // Main loop - feed audio buffers and service USB
     uint32_t loop_count = 0;
     while (true) {
+#ifdef ENABLE_USB_MIDI
+        // Service USB stack (critical for enumeration and MIDI)
+        tud_task();
+        
+        // Process MIDI messages
+        usb_midi_task();
+#endif
+        
         if (audio_pool != NULL) {
             audio_producer_task();
         } else {
@@ -218,6 +257,7 @@ int main() {
                 printf("Running without audio (loop: %lu)\n", loop_count);
             }
         }
+        
         // Small delay to prevent tight loop
         sleep_us(100);
         loop_count++;
