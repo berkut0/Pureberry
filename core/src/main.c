@@ -11,6 +11,7 @@
 #include "pico/sync.h"
 #include "pico/audio.h"
 #include "pico/audio_i2s.h"
+#include "hardware/gpio.h"
 
 // Firmware configuration
 #include "config.h"
@@ -191,6 +192,23 @@ int main() {
         printf("Continuing without audio...\n");
         // Don't return -1, continue to main loop for debugging
     }
+    
+    // Fix for RP2350A2 Errata 9: Configure I2S GPIO pins properly
+    // Errata 9 causes pins to stick at ~2.2V when pull-down is enabled
+    // Solution: Disable pull-down and set maximum drive strength for I2S pins
+    gpio_disable_pulls(I2S_DATA_PIN);
+    gpio_disable_pulls(I2S_CLOCK_PIN_BASE);      // BCK (pin 27)
+    gpio_disable_pulls(I2S_CLOCK_PIN_BASE + 1);  // LCK (pin 28)
+    
+    // Set maximum drive strength for I2S clock pins to ensure 3.3V output
+    gpio_set_drive_strength(I2S_CLOCK_PIN_BASE, GPIO_DRIVE_STRENGTH_12MA);      // BCK
+    gpio_set_drive_strength(I2S_CLOCK_PIN_BASE + 1, GPIO_DRIVE_STRENGTH_12MA); // LCK
+    gpio_set_drive_strength(I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_12MA);            // DIN
+    
+    // Set fast slew rate for I2S signals
+    gpio_set_slew_rate(I2S_CLOCK_PIN_BASE, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(I2S_CLOCK_PIN_BASE + 1, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_FAST);
     
     printf("I2S audio setup successful\n");
     printf("  Sample rate: %d Hz\n", output_format->sample_freq);
