@@ -372,8 +372,8 @@ def build_firmware(firmware_dir: Path, verbose: bool = False, cmake_defines: Lis
             os.environ["CC"] = gcc_path
             os.environ["CXX"] = gxx_path
             cmake_args.extend([
-                "-DCMAKE_C_COMPILER=gcc",
-                "-DCMAKE_CXX_COMPILER=g++"
+                f"-DCMAKE_C_COMPILER={gcc_path}",
+                f"-DCMAKE_CXX_COMPILER={gxx_path}"
             ])
             print(f"Using GCC for host tools: {gcc_path}")
         

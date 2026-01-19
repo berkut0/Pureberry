@@ -7,3 +7,7 @@
 [submodule "third_party/heavylib"]
 	path = third_party/heavylib
 	url = https://github.com/Wasted-Audio/heavylib.git
+[submodule "third_party/hvcc"]
+	path = third_party/hvcc
+	url = https://github.com/Wasted-Audio/hvcc.git
+	branch = develop
