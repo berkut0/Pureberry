@@ -364,17 +364,16 @@ def build_firmware(firmware_dir: Path, verbose: bool = False, cmake_defines: Lis
         # Prefer GCC over Clang for host tools compilation (pioasm, picotool)
         # This avoids issues with old Clang versions on Windows
         # Set environment variables so subprojects inherit them
+        # NOTE: We only set CC/CXX environment variables, NOT CMAKE_C_COMPILER/CMAKE_CXX_COMPILER
+        # because those would override the ARM toolchain compiler. Environment variables
+        # are used by Pico SDK for host tools only.
         import shutil
         gcc_path = shutil.which("gcc")
         gxx_path = shutil.which("g++")
         if gcc_path and gxx_path:
-            # Set environment variables for subprojects
+            # Set environment variables for subprojects (host tools only)
             os.environ["CC"] = gcc_path
             os.environ["CXX"] = gxx_path
-            cmake_args.extend([
-                f"-DCMAKE_C_COMPILER={gcc_path}",
-                f"-DCMAKE_CXX_COMPILER={gxx_path}"
-            ])
             print(f"Using GCC for host tools: {gcc_path}")
         
         # Set PICO_SDK_PATH if we determined it
@@ -420,7 +419,8 @@ def build_firmware(firmware_dir: Path, verbose: bool = False, cmake_defines: Lis
             build_args,
             check=True,
             capture_output=not verbose,
-            text=True
+            text=True,
+            env=env
         )
         
         if verbose and result.stdout:
