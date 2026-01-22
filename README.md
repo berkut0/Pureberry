@@ -32,6 +32,14 @@
 - Компилятор ARM GCC (arm-none-eabi-gcc)
 - OpenOCD или picotool (опционально, для зашивки)
 
+## Установка
+
+После клонирования репозитория необходимо инициализировать git submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
 ## Использование
 
 ```bash

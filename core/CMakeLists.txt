@@ -8,6 +8,17 @@ include(pico_extras_import.cmake)
 
 project(rp2350_puredata_firmware)
 
+# Use local picotool submodule if available
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(LOCAL_PICOTOOL_PATH "${PROJECT_ROOT}/third_party/picotool")
+
+if(EXISTS "${LOCAL_PICOTOOL_PATH}/.git" OR EXISTS "${LOCAL_PICOTOOL_PATH}/CMakeLists.txt")
+    file(TO_CMAKE_PATH "${LOCAL_PICOTOOL_PATH}" LOCAL_PICOTOOL_PATH_CMAKE)
+    set(PICOTOOL_GIT_REPOSITORY_URL "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE STRING "" FORCE)
+    set(PICOTOOL_GIT_BRANCH "2.1.1" CACHE STRING "" FORCE)
+    message(STATUS "Using local picotool from submodule: ${LOCAL_PICOTOOL_PATH_CMAKE}")
+endif()
+
 # Initialize the Pico SDK
 pico_sdk_init()
 
