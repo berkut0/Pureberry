@@ -1,5 +1,23 @@
 cmake_minimum_required(VERSION 3.13)
 
+# Set picotool path before including SDK files (Findpicotool.cmake is called during pico_sdk_init())
+# PROJECT_ROOT can be passed via -D from the build script; otherwise fall back to repo layout.
+set(PROJECT_ROOT "" CACHE PATH "Project root (optional)")
+if(PROJECT_ROOT)
+    get_filename_component(PROJECT_ROOT "${PROJECT_ROOT}" ABSOLUTE)
+else()
+    get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+endif()
+
+set(LOCAL_PICOTOOL_PATH "${PROJECT_ROOT}/third_party/picotool")
+
+if(NOT DEFINED PICOTOOL_FETCH_FROM_GIT_PATH AND
+   (EXISTS "${LOCAL_PICOTOOL_PATH}/.git" OR EXISTS "${LOCAL_PICOTOOL_PATH}/CMakeLists.txt"))
+    file(TO_CMAKE_PATH "${LOCAL_PICOTOOL_PATH}" LOCAL_PICOTOOL_PATH_CMAKE)
+    set(PICOTOOL_FETCH_FROM_GIT_PATH "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE PATH "Local picotool path")
+    message(STATUS "Using local picotool from submodule: ${LOCAL_PICOTOOL_PATH_CMAKE}")
+endif()
+
 # Include pico_sdk_import.cmake from the project root
 include(pico_sdk_import.cmake)
 
@@ -7,17 +25,6 @@ include(pico_sdk_import.cmake)
 include(pico_extras_import.cmake)
 
 project(rp2350_puredata_firmware)
-
-# Use local picotool submodule if available
-get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-set(LOCAL_PICOTOOL_PATH "${PROJECT_ROOT}/third_party/picotool")
-
-if(EXISTS "${LOCAL_PICOTOOL_PATH}/.git" OR EXISTS "${LOCAL_PICOTOOL_PATH}/CMakeLists.txt")
-    file(TO_CMAKE_PATH "${LOCAL_PICOTOOL_PATH}" LOCAL_PICOTOOL_PATH_CMAKE)
-    set(PICOTOOL_GIT_REPOSITORY_URL "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE STRING "" FORCE)
-    set(PICOTOOL_GIT_BRANCH "2.1.1" CACHE STRING "" FORCE)
-    message(STATUS "Using local picotool from submodule: ${LOCAL_PICOTOOL_PATH_CMAKE}")
-endif()
 
 # Initialize the Pico SDK
 pico_sdk_init()
@@ -38,6 +45,41 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
 )
 
+# Heavy-generated source files (optional; prefer manifest from build script)
+set(HEAVY_SOURCES_FILE "" CACHE FILEPATH "Path to Heavy sources manifest (optional)")
+set(HEAVY_SOURCE_DIR "" CACHE PATH "Path to Heavy-generated sources (optional)")
+
+if(HEAVY_SOURCES_FILE)
+    if(EXISTS "${HEAVY_SOURCES_FILE}")
+        include("${HEAVY_SOURCES_FILE}")
+    else()
+        message(FATAL_ERROR "HEAVY_SOURCES_FILE does not exist: ${HEAVY_SOURCES_FILE}")
+    endif()
+endif()
+
+if(NOT HEAVY_SOURCES AND HEAVY_SOURCE_DIR)
+    file(GLOB CONFIGURE_DEPENDS HEAVY_C_FILES "${HEAVY_SOURCE_DIR}/*.c")
+    file(GLOB CONFIGURE_DEPENDS HEAVY_CPP_FILES "${HEAVY_SOURCE_DIR}/*.cpp")
+    if(NOT HEAVY_C_FILES AND NOT HEAVY_CPP_FILES)
+        message(FATAL_ERROR "HEAVY_SOURCE_DIR is set but no Heavy sources found: ${HEAVY_SOURCE_DIR}")
+    endif()
+    set(HEAVY_SOURCES ${HEAVY_C_FILES} ${HEAVY_CPP_FILES})
+    set(HEAVY_INCLUDE_DIRS ${HEAVY_SOURCE_DIR})
+endif()
+
+if(HEAVY_SOURCES)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        ${HEAVY_SOURCES}
+    )
+    if(HEAVY_INCLUDE_DIRS)
+        target_include_directories(${PROJECT_NAME}.elf PRIVATE
+            ${HEAVY_INCLUDE_DIRS}
+        )
+    endif()
+elseif(HEAVY_SOURCES_FILE OR HEAVY_SOURCE_DIR)
+    message(FATAL_ERROR "Heavy sources requested but none found")
+endif()
+
 # Optional WS2812 support
 if(ENABLE_WS2812)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_WS2812)
@@ -50,27 +92,10 @@ if(ENABLE_WS2812)
     )
 endif()
 
-# Heavy-generated source files will be added here by build script
-# They should be in the build directory under c/
-# Example:
-# target_sources(${PROJECT_NAME}.elf PRIVATE
-#     ${HEAVY_SOURCE_DIR}/Heavy_heavy.cpp
-#     ${HEAVY_SOURCE_DIR}/HeavyContext.cpp
-#     ${HEAVY_SOURCE_DIR}/HvControl*.c
-#     ${HEAVY_SOURCE_DIR}/HvSignal*.c
-#     ${HEAVY_SOURCE_DIR}/HvMessage*.c
-#     ${HEAVY_SOURCE_DIR}/HvUtils.c
-#     ${HEAVY_SOURCE_DIR}/HvTable.c
-#     ${HEAVY_SOURCE_DIR}/HvLightPipe.c
-#     ${HEAVY_SOURCE_DIR}/HvHeavy.cpp
-# )
-
 # Include directories
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src
     src/dev
-    # Heavy-generated headers will be added here
-    # ${HEAVY_SOURCE_DIR}
 )
 
 # USB configuration: either pico_stdio_usb (default) or custom TinyUSB (MIDI enabled)
