@@ -40,6 +40,9 @@ option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
 
+# Mark Heavy-generated code as bare-metal to avoid platform warnings
+target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HV_BARE_METAL)
+
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
