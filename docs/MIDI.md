@@ -16,6 +16,8 @@ Use the build script with the `-DENABLE_USB_MIDI=ON` flag:
 python scripts/build_firmware.py your_patch.pd -DENABLE_USB_MIDI=ON
 ```
 
+**Note:** The build script does not flash the firmware automatically. After building, flash the generated UF2 file manually using picotool or by dragging it to the RP2350's mass storage device.
+
 ### Option 2: CMake Configuration
 
 If building manually with CMake:

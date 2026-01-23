@@ -51,9 +51,10 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
      - Supports custom paths via `HVCC_SEARCH_PATHS` environment variable
 
 2. **Core Project Integration**
-   - Core firmware copied to `build/<patch_name>/firmware/`
-   - Heavy-generated files copied to `firmware/heavy/`
-   - CMakeLists.txt updated to include Heavy sources
+   - Core firmware project is used directly (not copied)
+   - Heavy-generated sources are integrated via CMake manifest file
+   - Build script generates `heavy_sources.cmake` manifest listing all Heavy C/C++ files
+   - CMake includes the manifest via `-DHEAVY_SOURCES_FILE` variable
    - Firmware uses a fixed Heavy API name: `hv_patch_new()` / `hv_patch_free()`
 
 3. **CMake Configuration**
@@ -73,9 +74,28 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 - **Submodule Management**: Automatically detects and uses local SDK submodules
 - **Error Handling**: Graceful handling of locked files on Windows
 - **Flexible Output**: Supports custom output directories via `-o` option
-- **Verbose Mode**: Optional verbose output for debugging
+- **Logging Levels**: Configurable verbosity (quiet/normal/verbose/debug) with full log file
 - **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
-- **Context Integration**: Copies Heavy sources/headers into the firmware build and updates CMakeLists.txt to compile them
+- **Context Integration**: Generates CMake manifest (`heavy_sources.cmake`) listing Heavy sources and includes it via `HEAVY_SOURCES_FILE` variable
+- **Logging System**: Configurable log levels (quiet/normal/verbose/debug) with full log file at `build/<patch>/build_firmware.log`
+
+### Logging System
+
+The build script provides a unified logging system with multiple verbosity levels:
+
+- **quiet** (`-q`): Only errors and critical warnings
+- **normal** (default): Brief steps, warnings/errors visible, shows build progress messages
+- **verbose** (`-v`): Real-time streaming output from hvcc/cmake, shows build progress `[X/115]`
+- **debug** (`-d`): Full command details, paths, and all verbose output
+
+**Log File**: A complete log is always written to `build/<patch>/build_firmware.log` at DEBUG level, regardless of console verbosity. This ensures full build history is available for debugging.
+
+**Usage**:
+```bash
+python scripts/build_firmware.py patch.pd --log-level verbose
+python scripts/build_firmware.py patch.pd -v  # alias
+python scripts/build_firmware.py patch.pd -d   # debug mode
+```
 
 ## Audio Processing Pipeline
 
@@ -182,7 +202,7 @@ Heavy generates a context interface for each patch:
 
 The context processes audio in blocks of 64 samples per channel, matching Heavy's default block size.
 
-**Important**: The firmware code includes `Heavy_patch.h` and creates the Heavy context via `hv_patch_new()`. The build script does not rewrite source files; it only integrates the Heavy-generated sources into the build directory and updates the copied CMakeLists.txt.
+**Important**: The firmware code includes `Heavy_patch.h` and creates the Heavy context via `hv_patch_new()`. The build script generates a CMake manifest file (`heavy_sources.cmake`) that lists all Heavy-generated source files, and CMake includes this manifest via the `HEAVY_SOURCES_FILE` variable. The core project is used directly without copying.
 
 ### Heavy-Firmware Message Exchange
 
@@ -281,8 +301,9 @@ Heavy supports bidirectional communication between compiled Pd patches and firmw
    - Build script handles this gracefully with warnings
 
 6. **Heavy context initialization issues**
-   - If `heavy_context` is NULL, check that `hv_patch_new()` returns non-NULL and that `Heavy_patch.h` is present under `firmware/heavy/`
+   - If `heavy_context` is NULL, check that `hv_patch_new()` returns non-NULL and that `Heavy_patch.h` is present in `build/<patch>/c/`
    - Confirm hvcc was invoked with `-n patch` (fixed Heavy project name)
+   - Verify `heavy_sources.cmake` manifest was generated and contains Heavy source files
 
 ## Heavy Abstractions Support
 

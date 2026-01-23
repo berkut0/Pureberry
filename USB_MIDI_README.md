@@ -158,8 +158,9 @@ When connected to a computer:
 
 ### On Windows
 
-1. Build and flash firmware with `-DENABLE_USB_MIDI=ON`
-2. Connect RP2350 via USB
+1. Build firmware with `-DENABLE_USB_MIDI=ON` (flashing is done manually, the script does not flash)
+2. Flash the firmware manually using picotool or drag-and-drop UF2 file
+3. Connect RP2350 via USB
 3. Open Device Manager → Sound, video and game controllers
 4. You should see "Pure Data Audio Device"
 5. Use a MIDI host (MIDI-OX, Ableton Live, etc.) to send MIDI
