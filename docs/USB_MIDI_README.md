@@ -49,7 +49,7 @@ Example usage:
 |  |  [print channel]
 |  |
 |  [/ 127]           # Normalize velocity to 0-1
-|  |
+|
 [mtof]               # Convert note to frequency
 ```
 
@@ -84,7 +84,7 @@ Example usage:
 [unpack f f]         # Unpack: bend, channel
 |  |
 |  [- 8192]          # Center at 0
-|  |
+|
 [/ 8192]             # Normalize to -1.0 to +1.0
 ```
 
