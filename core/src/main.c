@@ -29,6 +29,12 @@
 #include "dev/ws2812.h"
 #endif
 
+// Optional SSD1306 OLED (I2C) support
+#ifdef ENABLE_OLED
+#include "dev/oled.h"
+#include "multicore_display.h"
+#endif
+
 // Optional USB MIDI support
 #ifdef ENABLE_USB_MIDI
 #include "tusb.h"
@@ -118,6 +124,10 @@ static void audio_core_main(void) {
                 block_size = samples_per_channel - (block * AUDIO_BLOCK_SIZE);
             }
             hv_processInlineInterleaved(heavy_context, NULL, audio_out_buffer, block_size);
+#ifdef ENABLE_OLED
+            // Publish a downsampled waveform for the OLED (core1 only; no I/O).
+            multicore_display_capture_interleaved(audio_out_buffer, block_size);
+#endif
             float_to_int16(audio_out_buffer,
                            samples + (block * AUDIO_BLOCK_SIZE * 2),
                            block_size * 2);
@@ -209,6 +219,14 @@ int main() {
     }
 #endif
 
+#ifdef ENABLE_OLED
+    if (oled_init()) {
+        printf("OLED initialized (SSD1306 I2C, addr 0x%02X)\n", OLED_I2C_ADDR);
+    } else {
+        printf("WARNING: OLED initialization failed\n");
+    }
+#endif
+
     __sync_synchronize();
     multicore_launch_core1(audio_core_main);
     printf("Entering main loop (core0)...\n");
@@ -219,6 +237,9 @@ int main() {
         usb_midi_task();
 #endif
         multicore_drain_led();
+#ifdef ENABLE_OLED
+        oled_task();
+#endif
         sleep_us(100);
     }
     

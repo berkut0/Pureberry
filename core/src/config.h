@@ -45,4 +45,42 @@
 #define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 #endif
 
+// SSD1306 OLED (u8g2) over I2C
+// Notes:
+// - Default wiring requested: SDA=GPIO2, SCL=GPIO3, addr=0x3C.
+// - Pico SDK uses two I2C instances (i2c0, i2c1). GPIO2/3 commonly map to I2C1.
+
+#ifndef OLED_I2C_INSTANCE
+#define OLED_I2C_INSTANCE 1   // 0 = i2c0, 1 = i2c1
+#endif
+
+#ifndef OLED_I2C_SDA_PIN
+#define OLED_I2C_SDA_PIN 2
+#endif
+
+#ifndef OLED_I2C_SCL_PIN
+#define OLED_I2C_SCL_PIN 3
+#endif
+
+#ifndef OLED_I2C_ADDR
+#define OLED_I2C_ADDR 0x3C
+#endif
+
+#ifndef OLED_I2C_BAUD
+#define OLED_I2C_BAUD 400000  // Hz
+#endif
+
+#ifndef OLED_I2C_TIMEOUT_US
+// Timeout for a whole I2C transaction. Used to prevent a stuck bus from hanging core0.
+#define OLED_I2C_TIMEOUT_US 5000
+#endif
+
+#ifndef OLED_WIDTH
+#define OLED_WIDTH 128
+#endif
+
+#ifndef OLED_HEIGHT
+#define OLED_HEIGHT 64
+#endif
+
 #endif // CONFIG_H

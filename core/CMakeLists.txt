@@ -36,6 +36,7 @@ set(CMAKE_CXX_STANDARD 17)
 # Optional features
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
+option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -99,6 +100,60 @@ if(ENABLE_WS2812)
     )
 endif()
 
+# Optional SSD1306 OLED (u8g2) support
+if(ENABLE_OLED)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+        ENABLE_OLED
+        U8X8_WITH_USER_PTR
+    )
+
+    set(U8G2_CSRC_DIR "${PROJECT_ROOT}/third_party/u8g2/csrc")
+
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/dev/oled.c
+        src/dev/u8g2_pico.c
+        src/multicore_display.c
+
+        # u8g2 core (subset)
+        ${U8G2_CSRC_DIR}/u8g2_arc.c
+        ${U8G2_CSRC_DIR}/u8g2_bitmap.c
+        ${U8G2_CSRC_DIR}/u8g2_box.c
+        ${U8G2_CSRC_DIR}/u8g2_buffer.c
+        ${U8G2_CSRC_DIR}/u8g2_circle.c
+        ${U8G2_CSRC_DIR}/u8g2_cleardisplay.c
+        ${U8G2_CSRC_DIR}/u8g2_d_memory.c
+        ${U8G2_CSRC_DIR}/u8g2_d_setup.c
+        ${U8G2_CSRC_DIR}/u8g2_font.c
+        ${U8G2_CSRC_DIR}/u8g2_fonts.c
+        ${U8G2_CSRC_DIR}/u8g2_hvline.c
+        ${U8G2_CSRC_DIR}/u8g2_intersection.c
+        ${U8G2_CSRC_DIR}/u8g2_kerning.c
+        ${U8G2_CSRC_DIR}/u8g2_line.c
+        ${U8G2_CSRC_DIR}/u8g2_ll_hvline.c
+        ${U8G2_CSRC_DIR}/u8g2_message.c
+        ${U8G2_CSRC_DIR}/u8g2_polygon.c
+        ${U8G2_CSRC_DIR}/u8g2_setup.c
+
+        # u8x8 core + SSD1306 driver
+        ${U8G2_CSRC_DIR}/u8x8_8x8.c
+        ${U8G2_CSRC_DIR}/u8x8_byte.c
+        ${U8G2_CSRC_DIR}/u8x8_cad.c
+        ${U8G2_CSRC_DIR}/u8x8_display.c
+        ${U8G2_CSRC_DIR}/u8x8_fonts.c
+        ${U8G2_CSRC_DIR}/u8x8_gpio.c
+        ${U8G2_CSRC_DIR}/u8x8_message.c
+        ${U8G2_CSRC_DIR}/u8x8_setup.c
+        ${U8G2_CSRC_DIR}/u8x8_string.c
+        ${U8G2_CSRC_DIR}/u8x8_u16toa.c
+        ${U8G2_CSRC_DIR}/u8x8_u8toa.c
+        ${U8G2_CSRC_DIR}/u8x8_d_ssd1306_128x64_noname.c
+    )
+
+    target_include_directories(${PROJECT_NAME}.elf PRIVATE
+        ${U8G2_CSRC_DIR}
+    )
+endif()
+
 # Include directories
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src
@@ -152,6 +207,7 @@ target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_multicore
     pico_util
     hardware_dma
+    hardware_i2c
     hardware_pwm
     hardware_clocks
     hardware_pio
