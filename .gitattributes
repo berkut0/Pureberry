@@ -1,0 +1,43 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Explicitly declare text files you want to always be normalized and converted
+# to native line endings on checkout.
+*.c text
+*.h text
+*.cpp text
+*.hpp text
+*.cmake text
+*.txt text
+*.md text
+*.py text
+*.json text
+*.yaml text
+*.yml text
+*.toml text
+*.sh text
+*.bat text
+*.ps1 text
+
+# Denote all files that are truly binary and should not be modified.
+*.uf2 binary
+*.bin binary
+*.elf binary
+*.hex binary
+*.o binary
+*.obj binary
+*.a binary
+*.lib binary
+*.so binary
+*.dll binary
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Submodules - let them handle their own line endings
+sdk/** -text
+third_party/** -text
