@@ -139,6 +139,67 @@ The firmware uses strict multicore separation: audio runs on **core1** only; **c
 
 DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. For the full set of architectural rules (who may call Heavy, what is allowed on each core), see the plan’s **Invariants** section.
 
+#### Strict Multicore Rules (Must Always Hold)
+
+These rules define the architecture contracts that must be maintained for correct operation:
+
+1. **Heavy context ownership**: Only **core1** may call any Heavy API functions:
+   - `hv_process*()` / `hv_processInlineInterleaved()` - audio processing
+   - `hv_sendMessageToReceiver*()` - control message injection (called via `multicore_drain_ctrl()`)
+   - `hv_patch_new()` / `hv_patch_free()` - context lifecycle
+   - **core0 must never call Heavy APIs directly**
+
+2. **Audio core (core1) restrictions**: The audio core must avoid any operation that can block unpredictably or introduce jitter:
+   - No blocking I/O (USB, I2C, SPI transactions)
+   - No `printf()` or logging (use queues to forward to core0 if needed)
+   - No `sleep()` or long delays
+   - No dynamic memory allocation (`malloc`/`free`)
+   - No long critical sections or spinlocks (except audio buffer pool, which is designed for cross-core use)
+
+3. **Send hook execution context**: Pd send hooks (registered via `hv_setSendHook()`) run synchronously during `hv_process*()` on **core1**. Therefore:
+   - Send hooks must be real-time safe (parse message, enqueue command, return quickly)
+   - Hardware side effects (LED updates, I2C, USB) must be deferred to core0 via queues
+   - Do not call `ws2812_set_*()` or other hardware drivers directly from send hooks
+
+4. **I/O core (core0) responsibilities**: core0 handles all non-audio work:
+   - USB stack servicing (`tud_task()`)
+   - MIDI packet processing (pushes to `ctrl_queue`)
+   - Peripheral control (WS2812 LED updates via `multicore_drain_led()`)
+   - Initialization (clocks, audio pool, Heavy context creation before launching core1)
+
+5. **Queue semantics**:
+   - `ctrl_queue`: core0 pushes, core1 drains once per audio buffer (before `hv_process*()`)
+   - `led_queue`: core1 send hooks push, core0 drains in main loop
+   - Overflow policy: **drop newest** (implemented in `multicore_audio.c`)
+
+#### Failure Modes & Backpressure
+
+**Queue overflow**: When queues are full, new events are dropped (newest dropped policy). This is expected behavior under high event rates:
+
+- **ctrl_queue overflow**: MIDI events may be lost during bursts. Mitigation: rate-limit or coalesce continuous controls (CC) on core0 before pushing.
+- **led_queue overflow**: LED updates may be skipped. This is acceptable for visual feedback; audio processing continues unaffected.
+
+**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
+
+**Recommendations**:
+- For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`
+- For discrete events (note on/off): ensure queue depth is sufficient for expected burst rates
+- Monitor queue pressure during development (add counters if needed)
+
+#### Validation
+
+Multicore changes should be validated under worst-case load, not only idle conditions:
+
+1. **Baseline metrics**: Measure audio block processing time (DSP + conversion + buffer handoff) to establish headroom
+2. **Stress testing**: Run worst-case USB/MIDI traffic and I2C polling while audio plays; confirm no audio underruns/glitches
+3. **Queue backpressure**: Intentionally burst control events (e.g., dense CC streams) and verify overflow policy behaves as intended
+4. **Long-run stability**: Run for extended periods (minutes/hours) to catch rare race conditions or buffer starvation
+
+**Success criteria**:
+- No buffer underruns or audible glitches under stress
+- Consistent (low-variance) audio loop timing with safety margin relative to block duration (~1.33 ms at 48 kHz, 64 samples/channel)
+- Control event latency stays within tolerance (typically 1 audio block)
+
 ## Hardware Requirements
 
 ### Target Hardware

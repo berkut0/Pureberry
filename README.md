@@ -1,63 +1,105 @@
 # RP2350 Pure Data Build System
 
-Система для компиляции Pure Data патчей в прошивку для Raspberry Pi RP2350 через hvcc.
+Build system for compiling Pure Data (Pd) patches into firmware for Raspberry Pi RP2350 via hvcc.
 
-## Описание
+## Description
 
-Этот проект позволяет компилировать Pure Data (Pd) патчи в прошивку для микроконтроллера RP2350, который имеет FPU и DSP функции, что делает его подходящим для выполнения аудио-обработки, сгенерированной из Pd патчей.
+This project compiles Pure Data patches into firmware for the RP2350 microcontroller, which features FPU and DSP capabilities suitable for real-time audio processing generated from Pd patches.
 
-## Архитектура
+## Requirements
 
-Проект состоит из:
-- **pd-patches/** - исходные Pure Data патчи
-- **core/** - ядро прошивки для интеграции hvcc кода
-- **scripts/** - билд-скрипты для автоматизации сборки
-- **build/** - папка для сборки (по умолчанию; создаётся автоматически)
+- **Python 3.9+**
+- **hvcc** (`pip install -r requirements.txt`)
+- **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
+- **CMake 3.13+**
+- **ARM GCC toolchain** (arm-none-eabi-gcc)
+- **picotool** (optional, for manual flashing) - included as git submodule
 
-Пины I2S (DIN, BCK, LCK) настраиваются в `core/src/config.h` или в локальном `core/src/config_local.h` (скопируйте `config_local.h.example` под свою плату).
+## Installation
 
-## Процесс сборки
-
-1. Билд-скрипт принимает PD файл
-2. Создает временную рабочую папку в `build/`
-3. Вызывает `hvcc` для генерации C/C++ кода
-4. Интегрирует сгенерированный код с core проектом
-5. Собирает прошивку через CMake/pico-sdk
-6. Прошивка выполняется вручную (скрипт не прошивает автоматически)
-
-## Требования
-
-- Python 3.9+
-- hvcc (`pip install -r requirements.txt`)
-- Raspberry Pi Pico SDK (для RP2350)
-- CMake 3.13+
-- Компилятор ARM GCC (arm-none-eabi-gcc)
-- OpenOCD или picotool (опционально, для ручной прошивки)
-
-## Установка
-
-После клонирования репозитория необходимо инициализировать git submodules:
+After cloning the repository, initialize git submodules:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-## Использование
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+Build a firmware from a Pure Data patch:
 
 ```bash
 python scripts/build_firmware.py pd-patches/your_patch.pd
 ```
 
-### Уровни логирования
+The firmware UF2 file will be generated at:
+```
+build/<patch_name>/firmware-build/rp2350_puredata_firmware.elf.uf2
+```
 
-Скрипт поддерживает несколько уровней детализации вывода:
-- `--log-level normal` (по умолчанию) - краткие шаги, warnings/errors видны
-- `--log-level verbose` или `-v` - стриминг прогресса сборки в реальном времени
-- `--log-level debug` или `-d` - полные команды и пути
-- `--log-level quiet` или `-q` - только ошибки
+### Logging Levels
 
-Лог сборки сохраняется в `build/<patch>/build_firmware.log` (в режимах verbose/debug в файле полный вывод подпроцессов; в normal/quiet — только сообщения скрипта).
+The build script supports multiple verbosity levels:
 
-## Лицензия
+- `--log-level normal` (default) - brief steps, warnings/errors visible
+- `--log-level verbose` or `-v` - real-time build progress streaming
+- `--log-level debug` or `-d` - full commands and paths
+- `--log-level quiet` or `-q` - errors only
 
-[Указать лицензию]
+Build log is saved to `build/<patch>/build_firmware.log` (full subprocess output in verbose/debug modes; script messages only in normal/quiet).
+
+## Configuration
+
+### I2S Pin Configuration
+
+I2S pins (DIN, BCK, LCK) are configured in:
+- `core/src/config.h` - default pins
+- `core/src/config_local.h` - local overrides (copy `config_local.h.example` for your board)
+
+Default pins:
+- DIN (data): GPIO 26
+- BCK (bit clock): GPIO 28
+- LCK (word clock/LRCLK): GPIO 27
+
+See `config_local.h.example` for an example configuration (e.g., DIN=5, LRCLK=6, BCLK=7).
+
+## Flashing
+
+Flash the firmware manually using picotool:
+
+```bash
+picotool load build/<patch_name>/firmware-build/rp2350_puredata_firmware.elf.uf2
+picotool reboot
+```
+
+Or copy the `.uf2` file to the RP2350's mass storage device (if mounted).
+
+## Architecture at a Glance
+
+The firmware uses **strict multicore separation**:
+- **Core1 (audio core)**: Runs Heavy DSP processing (`hv_process*()`), owns the Heavy context, handles audio buffer production. No blocking I/O, no USB tasks, no `printf`.
+- **Core0 (I/O core)**: Handles initialization, USB/MIDI, peripherals (WS2812 LEDs), and drains control queues.
+
+Communication between cores uses two queues:
+- `ctrl_queue` (core0 → core1): MIDI and control events
+- `led_queue` (core1 → core0): LED commands from Pd send hooks
+
+For complete architecture details, strict multicore rules, failure modes, and validation guidance, see [TECH.md](TECH.md).
+
+## Project Structure
+
+- **`pd-patches/`** - Pure Data patch source files
+- **`core/`** - Core firmware project (I2S audio, Heavy integration, multicore)
+- **`scripts/`** - Build automation scripts
+- **`build/`** - Build output directory (created automatically)
+- **`sdk/`** - SDK submodules (pico-sdk, pico-extras)
+- **`third_party/`** - Third-party dependencies (heavylib, picotool)
+
+## License
+
+[Specify license]
