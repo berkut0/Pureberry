@@ -130,6 +130,15 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
    - DMA transfers audio data to I2S hardware
    - Continuous streaming to PCM5102A DAC
 
+### Multicore
+
+The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via two queues (see `core/src/multicore_audio.h`):
+
+- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes with `ctrl_push_notein`, `ctrl_push_ctlin`, etc.; core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
+- **led_queue (core1 → core0)**: Pd send-hook commands (e.g. set_led_color, set_led_index). The send hook on core1 only parses the message and enqueues a `led_cmd_t`; core0 drains in the main loop and calls `ws2812_set_*`. Overflow policy: drop newest.
+
+DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. For the full set of architectural rules (who may call Heavy, what is allowed on each core), see the plan’s **Invariants** section.
+
 ## Hardware Requirements
 
 ### Target Hardware

@@ -13,12 +13,9 @@
 
 #include "usb_midi.h"
 #include "tusb.h"
-#include "HvHeavy.h"
+#include "multicore_audio.h"
 #include <stdio.h>
 #include <string.h>
-
-// Heavy context for sending messages to Pure Data
-static HeavyContextInterface *heavy_context = NULL;
 
 // MIDI statistics
 static usb_midi_stats_t midi_stats = {0};
@@ -38,10 +35,6 @@ static usb_midi_stats_t midi_stats = {0};
  * @param packet 4-byte USB MIDI packet
  */
 static void process_midi_packet(const uint8_t packet[4]) {
-    if (heavy_context == NULL) {
-        return;
-    }
-
     // USB MIDI packet format:
     // Byte 0: Cable number (high nibble) + Code Index Number (low nibble)
     // Bytes 1-3: MIDI message bytes
@@ -63,122 +56,58 @@ static void process_midi_packet(const uint8_t packet[4]) {
 
     switch (msg_type) {
         case MIDI_NOTE_ON:
-            // Pure Data notein format: [note, velocity, channel]
-            // Note: velocity=0 is treated as Note Off in Pure Data
             if (data2 > 0) {
                 midi_stats.note_on_count++;
             } else {
                 midi_stats.note_off_count++;
             }
-            
-            // Always send velocity (even 0 for Note Off) for Pure Data compatibility
-            // Use hv_sendMessageToReceiverFFF for [note, velocity, channel] list
-            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("notein"), 0.0,
-                    (double)data1, (double)data2, (double)channel)) {
-                printf("[MIDI] notein: note=%d vel=%d ch=%d\n", data1, data2, channel);
-            } else {
-                printf("[MIDI] notein: note=%d vel=%d ch=%d (queue full)\n", data1, data2, channel);
-            }
+            ctrl_push_notein(data1, data2, channel);
             break;
 
         case MIDI_NOTE_OFF:
             midi_stats.note_off_count++;
-            
-            // Pure Data notein format: [note, velocity=0, channel]
-            // Send as [note, 0, channel] to match Pure Data notein behavior
-            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("notein"), 0.0,
-                    (double)data1, 0.0, (double)channel)) {
-                printf("[MIDI] notein: note=%d vel=0 ch=%d (Note Off)\n", data1, channel);
-            } else {
-                printf("[MIDI] notein: note=%d vel=0 ch=%d (Note Off, queue full)\n", data1, channel);
-            }
+            ctrl_push_notein(data1, 0, channel);
             break;
 
         case MIDI_CONTROL_CHANGE:
             midi_stats.cc_count++;
-            
-            // Pure Data ctlin format: [controller, value, channel]
-            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("ctlin"), 0.0,
-                    (double)data1, (double)data2, (double)channel)) {
-                printf("[MIDI] ctlin: cc=%d val=%d ch=%d\n", data1, data2, channel);
-            } else {
-                printf("[MIDI] ctlin: cc=%d val=%d ch=%d (queue full)\n", data1, data2, channel);
-            }
+            ctrl_push_ctlin(data1, data2, channel);
             break;
 
         case MIDI_PROGRAM_CHANGE:
-            // Pure Data pgmin format: [program, channel]
-            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("pgmin"), 0.0,
-                    (double)data1, (double)channel)) {
-                printf("[MIDI] pgmin: prog=%d ch=%d\n", data1, channel);
-            } else {
-                printf("[MIDI] pgmin: prog=%d ch=%d (queue full)\n", data1, channel);
-            }
+            ctrl_push_pgmin(data1, channel);
             break;
 
-        case MIDI_PITCH_BEND:
+        case MIDI_PITCH_BEND: {
             midi_stats.pitch_bend_count++;
-            
-            // Pitch bend is 14-bit: combine data1 (LSB) and data2 (MSB)
-            int16_t bend_value = (data2 << 7) | data1;
-            // Convert to 0-16383 range (Pure Data bendin uses 0-16383, center = 8192)
-            // Pure Data bendin format: [bend, channel] where bend is 0-16383
-            double bend_pd = (double)bend_value;
-            
-            // Pure Data bendin format: [bend, channel]
-            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("bendin"), 0.0,
-                    bend_pd, (double)channel)) {
-                printf("[MIDI] bendin: bend=%.0f ch=%d\n", bend_pd, channel);
-            } else {
-                printf("[MIDI] bendin: bend=%.0f ch=%d (queue full)\n", bend_pd, channel);
-            }
+            int16_t bend_value = (int16_t)((data2 << 7) | data1);
+            ctrl_push_bendin(bend_value, channel);
             break;
+        }
 
         case MIDI_CHANNEL_AFTERTOUCH:
-            // Pure Data touchin format: [pressure, channel]
-            if (hv_sendMessageToReceiverFF(heavy_context, hv_stringToHash("touchin"), 0.0,
-                    (double)data1, (double)channel)) {
-                printf("[MIDI] touchin: pressure=%d ch=%d\n", data1, channel);
-            } else {
-                printf("[MIDI] touchin: pressure=%d ch=%d (queue full)\n", data1, channel);
-            }
+            ctrl_push_touchin(data1, channel);
             break;
 
         case MIDI_POLY_AFTERTOUCH:
-            // Pure Data polytouchin format: [note, pressure, channel]
-            if (hv_sendMessageToReceiverFFF(heavy_context, hv_stringToHash("polytouchin"), 0.0,
-                    (double)data1, (double)data2, (double)channel)) {
-                printf("[MIDI] polytouchin: note=%d pressure=%d ch=%d\n", data1, data2, channel);
-            } else {
-                printf("[MIDI] polytouchin: note=%d pressure=%d ch=%d (queue full)\n", data1, data2, channel);
-            }
+            ctrl_push_polytouchin(data1, data2, channel);
             break;
 
         default:
-            // System messages (0xF0-0xFF) or unknown
-            if (status >= MIDI_SYSTEM) {
-                printf("[MIDI] System message: 0x%02X\n", status);
-            }
+            if (status >= MIDI_SYSTEM) printf("[MIDI] System message: 0x%02X\n", status);
             break;
     }
 }
 
-// Initialize USB MIDI
-void usb_midi_init(HeavyContextInterface *context) {
-    heavy_context = context;
+void usb_midi_init(void) {
     memset(&midi_stats, 0, sizeof(midi_stats));
-    printf("USB MIDI initialized\n");
+    printf("USB MIDI initialized (multicore: ctrl_queue)\n");
 }
 
-// Process incoming MIDI messages
 void usb_midi_task(void) {
-    // Read all available MIDI packets
     while (tud_midi_available()) {
         uint8_t packet[4];
         if (tud_midi_packet_read(packet)) {
-            if (heavy_context == NULL) {
-                printf("[MIDI] WARNING: heavy_context is NULL, cannot send to Pure Data!\n");
-            }
             process_midi_packet(packet);
         }
     }

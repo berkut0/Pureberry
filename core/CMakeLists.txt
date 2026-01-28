@@ -49,6 +49,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_c
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
+    src/multicore_audio.c
 )
 
 # Heavy-generated source files (optional; prefer manifest from build script)
@@ -144,10 +145,12 @@ else()
     message(STATUS "USB MIDI disabled: Using pico_stdio_usb (CDC only)")
 endif()
 
-# Link libraries
+# Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t)
 target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_stdlib
     pico_sync
+    pico_multicore
+    pico_util
     hardware_dma
     hardware_pwm
     hardware_clocks

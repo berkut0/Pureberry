@@ -20,6 +20,7 @@
 
 #include "ws2812.pio.h"
 #include "HvHeavy.h"     // HvSendHook_t, hv_setSendHook, hv_stringToHash, message API
+#include "multicore_audio.h"
 
 // Static state
 static PIO pio_instance = WS2812_PIO_INST;
@@ -111,7 +112,7 @@ uint ws2812_get_num_leds(void) {
   return num_leds;
 }
 
-// --- Heavy send hook integration (Pd -> Firmware) ---
+// --- Heavy send hook (Pd -> Firmware): only parse and push to led_queue; core0 drains and calls ws2812_* ---
 
 static void hv_send_hook(HeavyContextInterface *context,
                          const char *sendName,
@@ -132,56 +133,35 @@ static void hv_send_hook(HeavyContextInterface *context,
     hashes_initialized = true;
   }
 
-  // Helper: accept either 0..1 floats or 0..255 floats
   const float scale = 255.0f;
 
-  if (sendHash == hash_set_led_color) {
-    // (R, G, B)
-    if (hv_msg_getNumElements(msg) >= 3) {
-      float r = hv_msg_getFloat(msg, 0);
-      float g = hv_msg_getFloat(msg, 1);
-      float b = hv_msg_getFloat(msg, 2);
-
-      // Heuristic: if values look like 0..1, scale to 0..255
-      if (r <= 1.0f && g <= 1.0f && b <= 1.0f) {
-        r *= scale; g *= scale; b *= scale;
-      }
-
-      if (r < 0) r = 0; if (r > 255) r = 255;
-      if (g < 0) g = 0; if (g > 255) g = 255;
-      if (b < 0) b = 0; if (b > 255) b = 255;
-
-      const uint32_t rgb = ((uint32_t) (uint8_t) r << 16) |
-                           ((uint32_t) (uint8_t) g << 8)  |
-                           ((uint32_t) (uint8_t) b);
-      ws2812_set_all(rgb);
-    }
+  if (sendHash == hash_set_led_color && hv_msg_getNumElements(msg) >= 3) {
+    float r = hv_msg_getFloat(msg, 0);
+    float g = hv_msg_getFloat(msg, 1);
+    float b = hv_msg_getFloat(msg, 2);
+    if (r <= 1.0f && g <= 1.0f && b <= 1.0f) { r *= scale; g *= scale; b *= scale; }
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    uint32_t rgb = ((uint32_t)(uint8_t)r << 16) | ((uint32_t)(uint8_t)g << 8) | ((uint32_t)(uint8_t)b);
+    led_cmd_t cmd = { .type = LED_CMD_SET_COLOR, .index = -1, .rgb = rgb };
+    (void) queue_try_add(&led_queue, &cmd);
     return;
   }
 
-  if (sendHash == hash_set_led_index) {
-    // (index, R, G, B)
-    if (hv_msg_getNumElements(msg) >= 4) {
-      const int idx = (int) hv_msg_getFloat(msg, 0);
-      float r = hv_msg_getFloat(msg, 1);
-      float g = hv_msg_getFloat(msg, 2);
-      float b = hv_msg_getFloat(msg, 3);
-
-      if (r <= 1.0f && g <= 1.0f && b <= 1.0f) {
-        r *= scale; g *= scale; b *= scale;
-      }
-
-      if (r < 0) r = 0; if (r > 255) r = 255;
-      if (g < 0) g = 0; if (g > 255) g = 255;
-      if (b < 0) b = 0; if (b > 255) b = 255;
-
-      if (idx >= 0 && (uint) idx < ws2812_get_num_leds()) {
-        const uint32_t rgb = ((uint32_t) (uint8_t) r << 16) |
-                             ((uint32_t) (uint8_t) g << 8)  |
-                             ((uint32_t) (uint8_t) b);
-        ws2812_set_color((uint) idx, rgb);
-        if (ws2812_get_num_leds() > 1) ws2812_update();
-      }
+  if (sendHash == hash_set_led_index && hv_msg_getNumElements(msg) >= 4) {
+    const int idx = (int) hv_msg_getFloat(msg, 0);
+    float r = hv_msg_getFloat(msg, 1);
+    float g = hv_msg_getFloat(msg, 2);
+    float b = hv_msg_getFloat(msg, 3);
+    if (r <= 1.0f && g <= 1.0f && b <= 1.0f) { r *= scale; g *= scale; b *= scale; }
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    uint32_t rgb = ((uint32_t)(uint8_t)r << 16) | ((uint32_t)(uint8_t)g << 8) | ((uint32_t)(uint8_t)b);
+    if (idx >= 0 && (uint) idx < ws2812_get_num_leds()) {
+      led_cmd_t cmd = { .type = LED_CMD_SET_INDEX, .index = idx, .rgb = rgb };
+      (void) queue_try_add(&led_queue, &cmd);
     }
     return;
   }

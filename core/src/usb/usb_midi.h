@@ -10,17 +10,15 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "HvHeavy.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * Initialize USB MIDI with Heavy context
- * @param context Heavy context to send MIDI data to
+ * Initialize USB MIDI (multicore: MIDI events go to ctrl_queue, drained by core1)
  */
-void usb_midi_init(HeavyContextInterface *context);
+void usb_midi_init(void);
 
 /**
  * Process incoming MIDI messages from USB
