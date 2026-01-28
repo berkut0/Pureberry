@@ -12,7 +12,9 @@
 - **pd-patches/** - исходные Pure Data патчи
 - **core/** - ядро прошивки для интеграции hvcc кода
 - **scripts/** - билд-скрипты для автоматизации сборки
-- **build/** - временная папка для сборки (автоматически создается)
+- **build/** - папка для сборки (по умолчанию; создаётся автоматически)
+
+Пины I2S (DIN, BCK, LCK) настраиваются в `core/src/config.h` или в локальном `core/src/config_local.h` (скопируйте `config_local.h.example` под свою плату).
 
 ## Процесс сборки
 
@@ -54,7 +56,7 @@ python scripts/build_firmware.py pd-patches/your_patch.pd
 - `--log-level debug` или `-d` - полные команды и пути
 - `--log-level quiet` или `-q` - только ошибки
 
-Полный лог всегда сохраняется в `build/<patch>/build_firmware.log`.
+Лог сборки сохраняется в `build/<patch>/build_firmware.log` (в режимах verbose/debug в файле полный вывод подпроцессов; в normal/quiet — только сообщения скрипта).
 
 ## Лицензия
 

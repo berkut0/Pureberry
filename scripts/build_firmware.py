@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -127,7 +128,11 @@ def run_cmd(
     Run a command, capture output, and route logs based on log_level.
 
     - Full stdout/stderr are always logged at DEBUG (for file log completeness).
-    - Console output depends on configured console handler level.
+    - Console output depends on configured console handler level:
+      * quiet/normal: вывод подпроцессов захватывается и фильтруется
+        (_emit_filtered_output).
+      * verbose/debug: вывод подпроцессов стримится в реальном времени
+        через _run_cmd_streaming.
     """
     if label and log_level in ("verbose", "debug"):
         logger.debug("%s", label)
@@ -308,8 +313,37 @@ def clean_build_directory(
     if not build_base_dir.exists():
         return True
 
+    def _on_rmtree_error(func, path, exc_info):  # type: ignore[no-untyped-def]
+        # Windows may mark files read-only (or external tools may); clear the bit and retry.
+        try:
+            os.chmod(path, stat.S_IWRITE)
+        except Exception:
+            pass
+        func(path)
+
     try:
-        shutil.rmtree(build_base_dir)
+        # Retry a couple of times in case of transient file locks (indexer/AV/IDE).
+        last_err: Optional[BaseException] = None
+        for attempt in range(3):
+            try:
+                shutil.rmtree(build_base_dir, onerror=_on_rmtree_error)
+                logger.debug("Cleaned build directory: %s", build_base_dir)
+                return True
+            except PermissionError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.25)
+                    continue
+                raise
+            except OSError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.25)
+                    continue
+                raise
+
+        if last_err:
+            raise last_err
         logger.debug("Cleaned build directory: %s", build_base_dir)
         return True
     except PermissionError as e:
@@ -325,25 +359,46 @@ def clean_build_directory(
         return False
 
 
+def _default_build_base_dir(project_root: Path) -> Path:
+    # Long-term default: keep "build/" as canonical build output directory.
+    # (Users can always override via --output.)
+    return project_root / "build"
+
+
+def _clean_patch_build_dir(build_dir: Path, logger: logging.Logger) -> None:
+    """
+    Clean only key generated artifacts for one patch build directory.
+
+    We intentionally do NOT delete the whole patch directory (or the log file),
+    to avoid Windows file-lock issues (e.g. build_firmware.log opened in an editor).
+    """
+    if not build_dir.exists():
+        return
+
+    # Remove Heavy output and manifests
+    heavy_dir = build_dir / "c"
+    if heavy_dir.exists():
+        clean_build_directory(heavy_dir, logger, force=True)
+
+    # Remove firmware build dirs (including timestamped fallbacks)
+    for fw_dir in [build_dir / "firmware-build", *sorted(build_dir.glob("firmware-build-*"))]:
+        if fw_dir.exists():
+            clean_build_directory(fw_dir, logger, force=True)
+
+
 def create_build_dir(
     patch_name: str,
     logger: logging.Logger,
     *,
     output_dir: Optional[Path] = None,
-    clean: bool = True,
 ) -> Path:
     """Create a build directory for this patch."""
     project_root = get_project_root()
 
     if output_dir is None:
-        build_base_dir = project_root / "build"
+        build_base_dir = _default_build_base_dir(project_root)
     else:
         build_base_dir = Path(output_dir)
-
-    if clean and build_base_dir.exists():
-        logger.info("Cleaning build directory: %s", build_base_dir)
-        if not clean_build_directory(build_base_dir, logger, force=True):
-            logger.warning("Some files could not be deleted, continuing anyway...")
 
     build_dir = build_base_dir / patch_name
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -527,6 +582,9 @@ def build_firmware(
         cmake_args.append("--log-level=WARNING")
 
     try:
+        # Run cmake/ninja with captured output so normal mode stays quiet (filtered).
+        # Run the build from a normal terminal or with sandbox disabled so CMake can
+        # delete its temp files; otherwise configure may fail with access denied.
         run_cmd(
             cmake_args,
             logger,
@@ -678,8 +736,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         patch_name,
         logger,
         output_dir=output_dir,
-        clean=args.clean,
     )
+
+    # Clean as early as possible (before attaching file logger / running any build steps).
+    if args.clean:
+        logger.info("Cleaning patch build directory: %s", build_dir)
+        _clean_patch_build_dir(build_dir, logger)
+
     logger.info("Build directory: %s", build_dir)
 
     log_file = build_dir / "build_firmware.log"
@@ -707,6 +770,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     cmake_defines = args.cmake_defines or []
     firmware_build_dir = build_dir / "firmware-build"
+
+    # If build dir is locked and --clean is enabled, we already tried cleaning above.
+    # As a last resort (still under --clean), fall back to a fresh firmware build dir.
+    if args.clean and firmware_build_dir.exists():
+        alt_build_dir = build_dir / f"firmware-build-{int(time.time())}"
+        logger.warning(
+            "firmware-build exists after clean; using fresh build dir: %s",
+            alt_build_dir,
+        )
+        firmware_build_dir = alt_build_dir
 
     with log_step(logger, "Build firmware"):
         if not build_firmware(

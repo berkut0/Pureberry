@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+out/
 *.uf2
 *.bin
 *.elf
@@ -44,3 +45,6 @@ Thumbs.db
 
 # SDK temporary files (if any are created outside submodule)
 sdk/pico-sdk/build/
+
+# Local firmware config overrides
+core/src/config_local.h

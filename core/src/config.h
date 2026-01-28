@@ -1,52 +1,48 @@
 /**
- * Firmware Configuration
- * 
- * Central configuration header for firmware.
- * Options are controlled via CMake target_compile_definitions.
+ * Firmware configuration (public compile-time options).
+ *
+ * Prefer local overrides in `config_local.h` (see `config_local.h.example`).
  */
 
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Heavy configuration
-// We always compile patches with the name "patch" for simplicity
-// This means generated files are always: Heavy_patch.h, hv_patch_new(), etc.
+// Optional local overrides (not tracked in git)
+// If supported by the compiler, include config_local.h when present.
+#if defined(__has_include)
+#  if __has_include("config_local.h")
+#    include "config_local.h"
+#  endif
+#endif
 
-// Optional features
-// ENABLE_WS2812 is controlled via CMake option (default: ON)
-// ENABLE_USB_MIDI is controlled via CMake option (default: OFF)
-// If not defined by CMake, features are disabled
+// Feature flags are typically set by CMake:
+// - ENABLE_WS2812
+// - ENABLE_USB_MIDI
 
-// USB MIDI Configuration
+// USB MIDI
 #ifdef ENABLE_USB_MIDI
-// USB MIDI is enabled - uses custom TinyUSB with CDC+MIDI
-// Uses Pure Data standard MIDI object format for compatibility
-// MIDI receiver names in Pure Data patches (standard Pure Data format):
-// - [r notein]          - receives [note, velocity, channel] list
-//                        Note On: velocity > 0, Note Off: velocity = 0
-// - [r ctlin]           - receives [controller, value, channel] list
-// - [r bendin]          - receives [bend, channel] list (bend: 0-16383, center=8192)
-// - [r pgmin]           - receives [program, channel] list
-// - [r touchin]         - receives [pressure, channel] list (channel aftertouch)
-// - [r polytouchin]     - receives [note, pressure, channel] list (poly aftertouch)
-//
-// These match Pure Data's standard MIDI objects for easy patch porting
-
-// USB MIDI Device Name
-// Customize the MIDI interface name that appears in your OS
-// Default: "Pure Data MIDI"
-//
-// To customize, define USB_MIDI_DEVICE_NAME before including this header:
-//   #define USB_MIDI_DEVICE_NAME "My Custom MIDI Device"
-//   #include "config.h"
-//
-// Or via CMake:
-//   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE USB_MIDI_DEVICE_NAME="My Custom MIDI Device")
-//
+// MIDI device name shown by the host OS.
 #ifndef USB_MIDI_DEVICE_NAME
 #define USB_MIDI_DEVICE_NAME "Pure Data MIDI"
 #endif
 
+#endif
+
+// I2S (pico-extras / PICO_AUDIO_I2S_*)
+// Clock pins are consecutive; order is controlled by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED.
+
+#ifndef PICO_AUDIO_I2S_DATA_PIN
+#define PICO_AUDIO_I2S_DATA_PIN 26
+#endif
+
+#ifndef PICO_AUDIO_I2S_CLOCK_PIN_BASE
+#define PICO_AUDIO_I2S_CLOCK_PIN_BASE 27
+#endif
+
+// 0: base = LRCLK (LCK), base+1 = BCLK (BCK)
+// 1: base = BCLK (BCK),  base+1 = LRCLK (LCK)
+#ifndef PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED
+#define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 #endif
 
 #endif // CONFIG_H

@@ -39,13 +39,8 @@
 #define AUDIO_BLOCK_SIZE 64  // Heavy default block size
 #define AUDIO_BUFFER_SIZE (AUDIO_BLOCK_SIZE * 2)  // Stereo
 
-// I2S pin configuration for PCM5102A
-// PCM5102A connections: DIN=26, BCK=27, LCK=28
-// Default order: CLOCK_PIN_BASE=LRCLK, CLOCK_PIN_BASE+1=BCLK
-// We need swapped order: CLOCK_PIN_BASE=BCLK, CLOCK_PIN_BASE+1=LRCLK
-#define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 1  // Enable swapped clock pin order
-#define I2S_DATA_PIN 26        // DIN (data input) on PCM5102A
-#define I2S_CLOCK_PIN_BASE 27  // Base for clock pins: CLOCK_PIN_BASE=BCK (27), CLOCK_PIN_BASE+1=LCK (28)
+// I2S pin configuration (config.h / config_local.h)
+// DIN = PICO_AUDIO_I2S_DATA_PIN; clocks = PICO_AUDIO_I2S_CLOCK_PIN_BASE, base+1 (order by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED).
 
 // Audio format
 static const audio_format_t audio_format = {
@@ -62,8 +57,8 @@ static audio_buffer_format_t audio_buffer_format = {
 
 // I2S configuration
 static const audio_i2s_config_t i2s_config = {
-    .data_pin = I2S_DATA_PIN,
-    .clock_pin_base = I2S_CLOCK_PIN_BASE,
+    .data_pin = PICO_AUDIO_I2S_DATA_PIN,
+    .clock_pin_base = PICO_AUDIO_I2S_CLOCK_PIN_BASE,
     .dma_channel = 0,  // Will be assigned automatically
     .pio_sm = 0  // PIO state machine 0
 };
@@ -196,19 +191,17 @@ int main() {
     // Fix for RP2350A2 Errata 9: Configure I2S GPIO pins properly
     // Errata 9 causes pins to stick at ~2.2V when pull-down is enabled
     // Solution: Disable pull-down and set maximum drive strength for I2S pins
-    gpio_disable_pulls(I2S_DATA_PIN);
-    gpio_disable_pulls(I2S_CLOCK_PIN_BASE);      // BCK (pin 27)
-    gpio_disable_pulls(I2S_CLOCK_PIN_BASE + 1);  // LCK (pin 28)
-    
-    // Set maximum drive strength for I2S clock pins to ensure 3.3V output
-    gpio_set_drive_strength(I2S_CLOCK_PIN_BASE, GPIO_DRIVE_STRENGTH_12MA);      // BCK
-    gpio_set_drive_strength(I2S_CLOCK_PIN_BASE + 1, GPIO_DRIVE_STRENGTH_12MA); // LCK
-    gpio_set_drive_strength(I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_12MA);            // DIN
-    
-    // Set fast slew rate for I2S signals
-    gpio_set_slew_rate(I2S_CLOCK_PIN_BASE, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(I2S_CLOCK_PIN_BASE + 1, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_FAST);
+    gpio_disable_pulls(PICO_AUDIO_I2S_DATA_PIN);
+    gpio_disable_pulls(PICO_AUDIO_I2S_CLOCK_PIN_BASE);
+    gpio_disable_pulls(PICO_AUDIO_I2S_CLOCK_PIN_BASE + 1);
+
+    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE + 1, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PICO_AUDIO_I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_12MA);
+
+    gpio_set_slew_rate(PICO_AUDIO_I2S_CLOCK_PIN_BASE, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(PICO_AUDIO_I2S_CLOCK_PIN_BASE + 1, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(PICO_AUDIO_I2S_DATA_PIN, GPIO_SLEW_RATE_FAST);
     
     printf("I2S audio setup successful\n");
     printf("  Sample rate: %d Hz\n", output_format->sample_freq);

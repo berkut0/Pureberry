@@ -70,14 +70,13 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 
 ### Build Script Features
 
-- **Automatic Cleanup**: Cleans build directory before compilation
+- **Clean**: По флагу `--clean` (по умолчанию) очищаются только артефакты патча (`c/`, `firmware-build*`) внутри `build/<patch>/`, без удаления всего каталога и лог-файла (чтобы избежать блокировок на Windows).
 - **Submodule Management**: Automatically detects and uses local SDK submodules
-- **Error Handling**: Graceful handling of locked files on Windows
-- **Flexible Output**: Supports custom output directories via `-o` option
-- **Logging Levels**: Configurable verbosity (quiet/normal/verbose/debug) with full log file
+- **Error Handling**: Graceful handling of locked files on Windows (retries, fallback to `firmware-build-<timestamp>` при заблокированном `firmware-build`)
+- **Flexible Output**: Supports custom output directories via `-o` option (default: `build/` in project root)
+- **Logging Levels**: Configurable verbosity (quiet/normal/verbose/debug); лог-файл `build/<patch>/build_firmware.log` — полный вывод подпроцессов только в verbose/debug, в normal/quiet в файле только сообщения скрипта уровня INFO/ERROR и выше
 - **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
 - **Context Integration**: Generates CMake manifest (`heavy_sources.cmake`) listing Heavy sources and includes it via `HEAVY_SOURCES_FILE` variable
-- **Logging System**: Configurable log levels (quiet/normal/verbose/debug) with full log file at `build/<patch>/build_firmware.log`
 
 ### Logging System
 
@@ -88,7 +87,7 @@ The build script provides a unified logging system with multiple verbosity level
 - **verbose** (`-v`): Real-time streaming output from hvcc/cmake, shows build progress `[X/115]`
 - **debug** (`-d`): Full command details, paths, and all verbose output
 
-**Log File**: A complete log is always written to `build/<patch>/build_firmware.log` at DEBUG level, regardless of console verbosity. This ensures full build history is available for debugging.
+**Log File**: Лог пишется в `build/<patch>/build_firmware.log`. В режимах **verbose** и **debug** в файл попадает полный вывод подпроцессов (уровень файла DEBUG). В **normal** и **quiet** в файле только сообщения скрипта уровня INFO и выше (построчный вывод cmake/ninja в файл не сохраняется).
 
 **Usage**:
 ```bash
@@ -101,13 +100,13 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 ### I2S Configuration
 
-- **Hardware**: PCM5102A DAC
-- **Pins**:
-  - DATA (DIN): GPIO 26
-  - BCLK: GPIO 27
-  - LRCLK (WS): GPIO 28
+- **Hardware**: PCM5102A DAC (или совместимый I2S DAC)
+- **Пины** задаются в `core/src/config.h` (дефолты) или в `core/src/config_local.h` (локальные переопределения, см. `config_local.h.example`):
+  - `PICO_AUDIO_I2S_DATA_PIN` — DIN (данные)
+  - `PICO_AUDIO_I2S_CLOCK_PIN_BASE` — первый пин тактирования (следующий идёт `base+1`)
+  - `PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED`: 0 = base→LRCLK (WS), base+1→BCLK; 1 = base→BCLK, base+1→LRCLK
+- **Дефолты в репо**: DIN=26, base=27 (LRCLK=27, BCLK=28 при swap=0). Пример для другой разводки (DIN=5, LRCLK=6, BCLK=7, swap=0) — в `config_local.h.example`.
 - **Format**: 16-bit signed PCM, stereo, 48 kHz
-- **Clock Order**: Swapped (BCLK on CLOCK_PIN_BASE, LRCLK on CLOCK_PIN_BASE+1)
 
 ### Audio Flow
 
@@ -136,11 +135,8 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 ### Target Hardware
 - **Microcontroller**: Raspberry Pi RP2350 (RP2350-Zero board)
 - **Audio DAC**: PCM5102A (I2S interface)
-- **Connections**:
-  - PCM5102A DIN → RP2350 GPIO 26
-  - PCM5102A BCK → RP2350 GPIO 27
-  - PCM5102A LCK → RP2350 GPIO 28
-  - Common ground required
+- **Connections**: пины I2S настраиваются в `config.h` / `config_local.h` (см. раздел I2S Configuration). По умолчанию: DIN→GPIO 26, BCK→GPIO 27, LCK→GPIO 28. Для своей платы скопируйте `config_local.h.example` в `config_local.h` и задайте нужные номера пинов.
+- Common ground required
 
 ### Development Tools
 - **Python 3.11+** with virtual environment
@@ -174,7 +170,10 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 rp2350-puredata/
 ├── core/                    # Core firmware project
 │   ├── src/
-│   │   └── main.c          # Main firmware entry point
+│   │   ├── main.c          # Main firmware entry point
+│   │   ├── config.h        # Firmware config (I2S pins, USB MIDI, etc.)
+│   │   ├── config_local.h.example  # Example for local overrides (copy to config_local.h)
+│   │   └── pico_config.h   # Pico SDK global config (includes config.h)
 │   ├── CMakeLists.txt      # CMake configuration
 │   ├── pico_sdk_import.cmake
 │   └── pico_extras_import.cmake
@@ -266,7 +265,7 @@ Heavy supports bidirectional communication between compiled Pd patches and firmw
 ### Compiler Settings
 
 - **C Standard**: C11
-- **C++ Standard**: C17
+- **C++ Standard**: C++17
 - **Optimization**: -O3 (Release mode)
 - **Target**: ARM Cortex-M33 (RP2350)
 
@@ -329,8 +328,9 @@ The project supports Heavy-compatible abstractions from the `heavylib` library, 
 ## Future Improvements
 
 - Audio input support (ADC or I2S input)
-- MIDI support
 - USB audio device mode
 - Real-time parameter control
 - Multiple patch support
 - Performance profiling tools
+
+**Note**: USB MIDI support is already available (CMake option `ENABLE_USB_MIDI`, see `config.h` and USB MIDI docs).

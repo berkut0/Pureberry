@@ -1,0 +1,21 @@
+/**
+ * Local (not tracked) firmware configuration overrides.
+ *
+ * Copy this file to `config_local.h` and adjust values for your hardware:
+ *   core/src/config_local.h
+ *
+ * Note: `config_local.h` is ignored by git (see .gitignore).
+ */
+
+#ifndef CONFIG_LOCAL_H
+#define CONFIG_LOCAL_H
+
+// I2S: use pico-extras' PICO_AUDIO_I2S_* macros (same as in config.h defaults).
+// Example for a board with DIN=5, LRCLK=6, BCLK=7 (consecutive clock pins).
+// When PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED is 0: base = LRCLK, base+1 = BCLK.
+
+#define PICO_AUDIO_I2S_DATA_PIN 5
+#define PICO_AUDIO_I2S_CLOCK_PIN_BASE 6
+#define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
+
+#endif // CONFIG_LOCAL_H
