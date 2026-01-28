@@ -125,14 +125,9 @@ def run_cmd(
     check: bool = True,
 ) -> subprocess.CompletedProcess:
     """
-    Run a command, capture output, and route logs based on log_level.
-
-    - Full stdout/stderr are always logged at DEBUG (for file log completeness).
-    - Console output depends on configured console handler level:
-      * quiet/normal: вывод подпроцессов захватывается и фильтруется
-        (_emit_filtered_output).
-      * verbose/debug: вывод подпроцессов стримится в реальном времени
-        через _run_cmd_streaming.
+    Run a command and route output by log_level.
+    Full stdout/stderr logged at DEBUG. quiet/normal: captured and filtered;
+    verbose/debug: streamed in real time.
     """
     if label and log_level in ("verbose", "debug"):
         logger.debug("%s", label)
