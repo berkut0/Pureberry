@@ -4,7 +4,9 @@
  * C implementation with C-compatible API.
  * Uses PIO state machine for precise timing required by WS2812 protocol.
  *
- * Heavy integration is also done in C via HvHeavy.h (hv_setSendHook).
+ * This driver never calls hv_setSendHook(). Patch API (patch_api.c) owns the single
+ * send hook and routes set_led_color / set_led_index into led_queue; core0 drains
+ * led_queue and calls ws2812_set_* from multicore_drain_led().
  */
 
 #ifdef ENABLE_WS2812
@@ -19,7 +21,6 @@
 #include "pico/time.h"   // sleep_us, sleep_ms
 
 #include "ws2812.pio.h"
-#include "HvHeavy.h"     // HvSendHook_t, hv_setSendHook, hv_stringToHash, message API
 #include "multicore_audio.h"
 
 // Static state
@@ -112,72 +113,12 @@ uint ws2812_get_num_leds(void) {
   return num_leds;
 }
 
-// --- Heavy send hook (Pd -> Firmware): only parse and push to led_queue; core0 drains and calls ws2812_* ---
-
-static void hv_send_hook(HeavyContextInterface *context,
-                         const char *sendName,
-                         hv_uint32_t sendHash,
-                         const HvMessage *msg) {
-  (void) context;
-  (void) sendName;
-
-  if (!msg) return;
-
-  static hv_uint32_t hash_set_led_color = 0;
-  static hv_uint32_t hash_set_led_index = 0;
-  static bool hashes_initialized = false;
-
-  if (!hashes_initialized) {
-    hash_set_led_color = hv_stringToHash("set_led_color");
-    hash_set_led_index = hv_stringToHash("set_led_index");
-    hashes_initialized = true;
-  }
-
-  const float scale = 255.0f;
-
-  if (sendHash == hash_set_led_color && hv_msg_getNumElements(msg) >= 3) {
-    float r = hv_msg_getFloat(msg, 0);
-    float g = hv_msg_getFloat(msg, 1);
-    float b = hv_msg_getFloat(msg, 2);
-    if (r <= 1.0f && g <= 1.0f && b <= 1.0f) { r *= scale; g *= scale; b *= scale; }
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
-    uint32_t rgb = ((uint32_t)(uint8_t)r << 16) | ((uint32_t)(uint8_t)g << 8) | ((uint32_t)(uint8_t)b);
-    led_cmd_t cmd = { .type = LED_CMD_SET_COLOR, .index = -1, .rgb = rgb };
-    (void) queue_try_add(&led_queue, &cmd);
-    return;
-  }
-
-  if (sendHash == hash_set_led_index && hv_msg_getNumElements(msg) >= 4) {
-    const int idx = (int) hv_msg_getFloat(msg, 0);
-    float r = hv_msg_getFloat(msg, 1);
-    float g = hv_msg_getFloat(msg, 2);
-    float b = hv_msg_getFloat(msg, 3);
-    if (r <= 1.0f && g <= 1.0f && b <= 1.0f) { r *= scale; g *= scale; b *= scale; }
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
-    uint32_t rgb = ((uint32_t)(uint8_t)r << 16) | ((uint32_t)(uint8_t)g << 8) | ((uint32_t)(uint8_t)b);
-    if (idx >= 0 && (uint) idx < ws2812_get_num_leds()) {
-      led_cmd_t cmd = { .type = LED_CMD_SET_INDEX, .index = idx, .rgb = rgb };
-      (void) queue_try_add(&led_queue, &cmd);
-    }
-    return;
-  }
-}
-
-static void ws2812_register_send_hook(HeavyContextInterface *context) {
-  if (!context) return;
-  hv_setSendHook(context, hv_send_hook);
-}
-
+/* ws2812_init_with_hook: init only; no hv_setSendHook (patch_api_init owns the single send hook). */
 bool ws2812_init_with_hook(uint pin, uint num_leds_param, HeavyContextInterface *context) {
+  (void) context;
   if (!ws2812_init(pin, num_leds_param)) return false;
 
-  ws2812_register_send_hook(context);
-
-  // Blink once (white) to indicate successful initialization
+  /* Blink once (white) to indicate successful initialization */
   ws2812_set_all(0xFF0000);
   ws2812_update();
   sleep_ms(100);

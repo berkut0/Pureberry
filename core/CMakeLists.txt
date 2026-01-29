@@ -51,6 +51,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_c
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/multicore_audio.c
+    src/patch_api.c
 )
 
 # Heavy-generated source files (optional; prefer manifest from build script)

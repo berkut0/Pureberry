@@ -79,6 +79,48 @@ picotool reboot
 
 Or copy the `.uf2` file to the RP2350's mass storage device (if mounted).
 
+## Patch API
+
+The contract between Pd patches and firmware is defined in `core/src/patch_api.c` and documented here.
+
+### MIDI
+
+Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `[pgmin]`, `[touchin]`, `[polytouchin]`. The firmware sends USB MIDI into hvcc receivers with canonical argument order:
+
+| Pd object   | hvcc receiver    | Message format (order)        |
+|-------------|------------------|-------------------------------|
+| `[notein]`  | `__hv_notein`    | (pitch, velocity, channel0)   |
+| `[ctlin]`   | `__hv_ctlin`     | (value, cc, channel0)         |
+| `[bendin]`  | `__hv_bendin`    | (bend14, channel0)            |
+| `[pgmin]`   | `__hv_pgmin`     | (program, channel0)           |
+| `[touchin]` | `__hv_touchin`   | (pressure, channel0)          |
+| `[polytouchin]` | `__hv_polytouchin` | (pressure, note, channel0) |
+
+`channel0` is 0..15. Reference: `third_party/hvcc/tests/src/test_midi.cpp`.
+
+### Single entry point for send hook
+
+**`hv_setSendHook()` is called in exactly one place: `patch_api_init(ctx)`.** No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. This avoids "last one wins" when the project grows.
+
+### @hv_param and naming (patch names, not C)
+
+- **Inputs** (firmware → patch): Use `hw_*` in the patch, e.g. `[r hw_knob1 @hv_param 0 1 0]`, `[r hw_btn1 @hv_param 0 1 0 bool]`. Firmware sends to these receivers via hash/enum.
+- **Two classes of inputs** (for future knobs/I2C/encoders):
+  - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.
+  - **Event/packet** ("button pressed", "I2C packet", "encoder +N") → use ordinary receivers/messages (not necessarily @hv_param) if it is not a UI parameter.
+- **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → queue) is in `patch_api.c`.
+
+### Send commands (LED)
+
+Official API for LED control from the patch:
+
+- **set_led_color** `(r g b)` — three floats (0–1 or 0–255). Sets all LEDs.
+- **set_led_index** `(idx r g b)` — index plus three floats. Sets one LED.
+
+These are the only supported send commands for LED; the table is extended in `patch_api.c` for future commands.
+
+---
+
 ## Architecture at a Glance
 
 The firmware uses **strict multicore separation**:
@@ -86,8 +128,8 @@ The firmware uses **strict multicore separation**:
 - **Core0 (I/O core)**: Handles initialization, USB/MIDI, peripherals (WS2812 LEDs), and drains control queues.
 
 Communication between cores uses two queues:
-- `ctrl_queue` (core0 → core1): MIDI and control events
-- `led_queue` (core1 → core0): LED commands from Pd send hooks
+- `ctrl_queue` (core0 → core1): MIDI and control events (pushed via `patch_api_push_*` or `ctrl_push_hash_*`)
+- `led_queue` (core1 → core0): LED commands from the patch send hook (routed in `patch_api.c`); core0 drains and calls `ws2812_*`
 
 For complete architecture details, strict multicore rules, failure modes, and validation guidance, see [TECH.md](TECH.md).
 

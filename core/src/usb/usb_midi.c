@@ -1,19 +1,21 @@
 /*
  * USB MIDI Implementation for RP2350 Pure Data Firmware
- * 
- * Receives MIDI messages via USB and forwards them to Pure Data patches
- * Uses Pure Data standard MIDI object format for compatibility:
- * - notein: [note, velocity, channel] lists (velocity=0 for Note Off)
- * - ctlin: [controller, value, channel] lists
- * - bendin: [bend, channel] lists
- * - pgmin: [program, channel] lists
- * 
- * Supports: Note On/Off, Control Change, Pitch Bend, Program Change, Aftertouch
+ *
+ * Receives MIDI messages via USB and forwards them to hvcc receivers __hv_* with
+ * canonical argument order (see third_party/hvcc/tests/src/test_midi.cpp):
+ * - __hv_notein: (pitch, velocity, channel0), channel0 = 0..15
+ * - __hv_ctlin:  (value, cc, channel0)
+ * - __hv_bendin: (bend14, channel0), bend14 = 0..16383
+ * - __hv_pgmin:  (program, channel0)
+ * - __hv_touchin: (pressure, channel0)
+ * - __hv_polytouchin: (pressure, note, channel0)
+ *
+ * Patches use standard Pd objects [notein], [ctlin], etc.; no r notein.
  */
 
 #include "usb_midi.h"
 #include "tusb.h"
-#include "multicore_audio.h"
+#include "patch_api.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -61,36 +63,36 @@ static void process_midi_packet(const uint8_t packet[4]) {
             } else {
                 midi_stats.note_off_count++;
             }
-            ctrl_push_notein(data1, data2, channel);
+            patch_api_push_notein(data1, data2, channel);
             break;
 
         case MIDI_NOTE_OFF:
             midi_stats.note_off_count++;
-            ctrl_push_notein(data1, 0, channel);
+            patch_api_push_notein(data1, 0, channel);
             break;
 
         case MIDI_CONTROL_CHANGE:
             midi_stats.cc_count++;
-            ctrl_push_ctlin(data1, data2, channel);
+            patch_api_push_ctlin(data1, data2, channel);
             break;
 
         case MIDI_PROGRAM_CHANGE:
-            ctrl_push_pgmin(data1, channel);
+            patch_api_push_pgmin(data1, channel);
             break;
 
         case MIDI_PITCH_BEND: {
             midi_stats.pitch_bend_count++;
             int16_t bend_value = (int16_t)((data2 << 7) | data1);
-            ctrl_push_bendin(bend_value, channel);
+            patch_api_push_bendin(bend_value, channel);
             break;
         }
 
         case MIDI_CHANNEL_AFTERTOUCH:
-            ctrl_push_touchin(data1, channel);
+            patch_api_push_touchin(data1, channel);
             break;
 
         case MIDI_POLY_AFTERTOUCH:
-            ctrl_push_polytouchin(data1, data2, channel);
+            patch_api_push_polytouchin(data1, data2, channel);
             break;
 
         default:

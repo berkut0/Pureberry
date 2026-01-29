@@ -1,6 +1,7 @@
 /**
- * Multicore audio: queue init, ctrl_push_*, drain_ctrl, drain_led.
+ * Multicore audio: transport only — queues, hv_event_t, drain, ctrl_push_hash_*.
  * Policy: ctrl_queue overflow = drop newest (queue_try_add returns false, we drop).
+ * Patch API semantics (MIDI __hv_*, commands) live in patch_api.c.
  */
 
 #include "multicore_audio.h"
@@ -19,83 +20,34 @@
 queue_t ctrl_queue;
 queue_t led_queue;
 
-/* Receiver hashes (Heavy Pd receivers); computed once at init */
-static uint32_t hash_notein;
-static uint32_t hash_ctlin;
-static uint32_t hash_bendin;
-static uint32_t hash_pgmin;
-static uint32_t hash_touchin;
-static uint32_t hash_polytouchin;
-static bool hashes_done;
-
-static void ensure_hashes(void) {
-    if (hashes_done) return;
-    hash_notein     = (uint32_t) hv_stringToHash("notein");
-    hash_ctlin      = (uint32_t) hv_stringToHash("ctlin");
-    hash_bendin     = (uint32_t) hv_stringToHash("bendin");
-    hash_pgmin      = (uint32_t) hv_stringToHash("pgmin");
-    hash_touchin    = (uint32_t) hv_stringToHash("touchin");
-    hash_polytouchin = (uint32_t) hv_stringToHash("polytouchin");
-    hashes_done = true;
-}
-
 void multicore_audio_init(void) {
-    ensure_hashes();
     queue_init(&ctrl_queue, sizeof(hv_event_t), CTRL_QUEUE_LEN);
     queue_init(&led_queue, sizeof(led_cmd_t), LED_QUEUE_LEN);
 }
 
-/* ctrl_push_*: fill hv_event_t and queue_try_add; on overflow drop (return false) */
-bool ctrl_push_notein(uint8_t note, uint8_t vel, uint8_t ch) {
+bool ctrl_push_hash_f(uint32_t receiver_hash, float a) {
     hv_event_t ev = {
-        .receiver_hash = hash_notein,
-        .argc = 3,
-        .argv = { (float)note, (float)vel, (float)ch }
+        .receiver_hash = receiver_hash,
+        .argc = 1,
+        .argv = { a, 0.0f, 0.0f }
     };
     return queue_try_add(&ctrl_queue, &ev);
 }
 
-bool ctrl_push_ctlin(uint8_t ctrl, uint8_t val, uint8_t ch) {
+bool ctrl_push_hash_ff(uint32_t receiver_hash, float a, float b) {
     hv_event_t ev = {
-        .receiver_hash = hash_ctlin,
-        .argc = 3,
-        .argv = { (float)ctrl, (float)val, (float)ch }
-    };
-    return queue_try_add(&ctrl_queue, &ev);
-}
-
-bool ctrl_push_bendin(int16_t bend, uint8_t ch) {
-    hv_event_t ev = {
-        .receiver_hash = hash_bendin,
+        .receiver_hash = receiver_hash,
         .argc = 2,
-        .argv = { (float)bend, (float)ch, 0.0f }
+        .argv = { a, b, 0.0f }
     };
     return queue_try_add(&ctrl_queue, &ev);
 }
 
-bool ctrl_push_pgmin(uint8_t prog, uint8_t ch) {
+bool ctrl_push_hash_fff(uint32_t receiver_hash, float a, float b, float c) {
     hv_event_t ev = {
-        .receiver_hash = hash_pgmin,
-        .argc = 2,
-        .argv = { (float)prog, (float)ch, 0.0f }
-    };
-    return queue_try_add(&ctrl_queue, &ev);
-}
-
-bool ctrl_push_touchin(uint8_t pressure, uint8_t ch) {
-    hv_event_t ev = {
-        .receiver_hash = hash_touchin,
-        .argc = 2,
-        .argv = { (float)pressure, (float)ch, 0.0f }
-    };
-    return queue_try_add(&ctrl_queue, &ev);
-}
-
-bool ctrl_push_polytouchin(uint8_t note, uint8_t pressure, uint8_t ch) {
-    hv_event_t ev = {
-        .receiver_hash = hash_polytouchin,
+        .receiver_hash = receiver_hash,
         .argc = 3,
-        .argv = { (float)note, (float)pressure, (float)ch }
+        .argv = { a, b, c }
     };
     return queue_try_add(&ctrl_queue, &ev);
 }

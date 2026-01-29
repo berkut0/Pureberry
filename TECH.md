@@ -134,8 +134,8 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via two queues (see `core/src/multicore_audio.h`):
 
-- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes with `ctrl_push_notein`, `ctrl_push_ctlin`, etc.; core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
-- **led_queue (core1 → core0)**: Pd send-hook commands (e.g. set_led_color, set_led_index). The send hook on core1 only parses the message and enqueues a `led_cmd_t`; core0 drains in the main loop and calls `ws2812_set_*`. Overflow policy: drop newest.
+- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `ctrl_push_hash_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
+- **led_queue (core1 → core0)**: Pd send-hook commands (set_led_color, set_led_index). The send hook runs in the Heavy/audio context and **only parses and enqueues**; core0 drains in the main loop and performs the actual work (I2C, GPIO, display). Overflow policy: drop newest.
 
 DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. For the full set of architectural rules (who may call Heavy, what is allowed on each core), see the plan’s **Invariants** section.
 
@@ -156,10 +156,7 @@ These rules define the architecture contracts that must be maintained for correc
    - No dynamic memory allocation (`malloc`/`free`)
    - No long critical sections or spinlocks (except audio buffer pool, which is designed for cross-core use)
 
-3. **Send hook execution context**: Pd send hooks (registered via `hv_setSendHook()`) run synchronously during `hv_process*()` on **core1**. Therefore:
-   - Send hooks must be real-time safe (parse message, enqueue command, return quickly)
-   - Hardware side effects (LED updates, I2C, USB) must be deferred to core0 via queues
-   - Do not call `ws2812_set_*()` or other hardware drivers directly from send hooks
+3. **Send hook execution context**: The send hook runs in the Heavy/audio context (RT). **Single entry point**: `hv_setSendHook()` is called in exactly one place — `patch_api_init(ctx)` in `patch_api.c`. No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. The hook must be RT-safe: only minimal parsing and enqueue into one or more queues (led_queue, future cmd_queue). Core0 in the main loop drains these queues and performs the real work (I2C, GPIO, display). Do not call `ws2812_set_*()` or other hardware drivers directly from the send hook.
 
 4. **I/O core (core0) responsibilities**: core0 handles all non-audio work:
    - USB stack servicing (`tud_task()`)
@@ -179,7 +176,7 @@ These rules define the architecture contracts that must be maintained for correc
 - **ctrl_queue overflow**: MIDI events may be lost during bursts. Mitigation: rate-limit or coalesce continuous controls (CC) on core0 before pushing.
 - **led_queue overflow**: LED updates may be skipped. This is acceptable for visual feedback; audio processing continues unaffected.
 
-**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
+**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_hash_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
 
 **Recommendations**:
 - For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`

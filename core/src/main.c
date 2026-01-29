@@ -24,6 +24,9 @@
 #include "Heavy_patch.h"
 #include "HvHeavy.h"
 
+// Patch API (single send hook owner; MIDI push helpers)
+#include "patch_api.h"
+
 // Optional WS2812 support
 #ifdef ENABLE_WS2812
 #include "dev/ws2812.h"
@@ -206,7 +209,10 @@ int main() {
         return -1;
     }
     printf("Heavy context created (sample rate: %d Hz)\n", SAMPLE_RATE);
-    
+
+    /* Single entry point for send hook: only patch_api_init() calls hv_setSendHook() */
+    patch_api_init(heavy_context);
+
 #ifdef ENABLE_USB_MIDI
     usb_midi_init();
 #endif
