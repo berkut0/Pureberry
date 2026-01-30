@@ -52,6 +52,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/multicore_audio.c
     src/patch_api.c
+    src/dev/adc_pots.c
 )
 
 # Heavy-generated source files (optional; prefer manifest from build script)
@@ -201,7 +202,7 @@ else()
     message(STATUS "USB MIDI disabled: Using pico_stdio_usb (CDC only)")
 endif()
 
-# Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t)
+# Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t; hardware_adc for pots)
 target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_stdlib
     pico_sync
@@ -213,6 +214,7 @@ target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     hardware_clocks
     hardware_pio
     hardware_irq
+    hardware_adc
     pico_audio
     pico_audio_i2s
 )

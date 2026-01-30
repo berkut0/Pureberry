@@ -38,6 +38,9 @@ bool patch_api_push_touchin(uint8_t pressure, uint8_t ch);
 /** MIDI: push to __hv_polytouchin. Args in message: (pressure, note, channel0). */
 bool patch_api_push_polytouchin(uint8_t note, uint8_t pressure, uint8_t ch);
 
+/** Push potentiometer value to knob1..knob4 receiver by index (0..3). Use when POTS_BACKEND=ADC. */
+bool patch_api_push_knob(uint8_t index, float value);
+
 #ifdef __cplusplus
 }
 #endif

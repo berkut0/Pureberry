@@ -32,9 +32,8 @@ static inline uint8_t sample_to_y(float s) {
 void multicore_display_capture_interleaved(const float *lr_interleaved, size_t frames) {
     if (!lr_interleaved || frames == 0) return;
 
-    // Target ~30 FPS for 128px width at 48kHz:
-    // decim ~= 48000 / (30*128) ≈ 12.5  -> use 12
-    const uint8_t decim_n = 12;
+    // 48 kHz, 128 px: decim so waveform publish rate matches OLED_REFRESH_FPS.
+    const uint8_t decim_n = (uint8_t) (48000 / ((OLED_REFRESH_FPS) * 128));
 
     for (size_t i = 0; i < frames; i++) {
         g_capture_decim++;

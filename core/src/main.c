@@ -9,6 +9,7 @@
 #include <math.h>
 #include "pico/stdlib.h"
 #include "pico/sync.h"
+#include "pico/time.h"
 #include "pico/multicore.h"
 #include "pico/audio.h"
 #include "pico/audio_i2s.h"
@@ -30,6 +31,11 @@
 // Optional WS2812 support
 #ifdef ENABLE_WS2812
 #include "dev/ws2812.h"
+#endif
+
+// Potentiometers (knob1..knob4) when POTS_BACKEND=ADC
+#if (POTS_BACKEND == POTS_BACKEND_ADC)
+#include "dev/adc_pots.h"
 #endif
 
 // Optional SSD1306 OLED (I2C) support
@@ -79,6 +85,11 @@ static audio_buffer_pool_t *audio_pool = NULL;
 
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
+
+#if (POTS_BACKEND == POTS_BACKEND_ADC)
+static float pots_last_sent[4];
+static uint32_t pots_last_poll_ms;
+#endif
 
 
 /**
@@ -233,6 +244,14 @@ int main() {
     }
 #endif
 
+#if (POTS_BACKEND == POTS_BACKEND_ADC)
+    if (POTS_COUNT > 0 && adc_pots_init()) {
+        for (int i = 0; i < 4 && i < POTS_COUNT; i++) pots_last_sent[i] = -1.f;
+        pots_last_poll_ms = 0;
+        printf("ADC pots initialized (knob1..knob%u, poll %d ms)\n", (unsigned)POTS_COUNT, POTS_POLL_MS);
+    }
+#endif
+
     __sync_synchronize();
     multicore_launch_core1(audio_core_main);
     printf("Entering main loop (core0)...\n");
@@ -245,6 +264,24 @@ int main() {
         multicore_drain_led();
 #ifdef ENABLE_OLED
         oled_task();
+#endif
+#if (POTS_BACKEND == POTS_BACKEND_ADC)
+        if (POTS_COUNT > 0) {
+            uint32_t now = to_ms_since_boot(get_absolute_time());
+            if (now - pots_last_poll_ms >= (uint32_t)POTS_POLL_MS) {
+                pots_last_poll_ms = now;
+                float v[4];
+                adc_pots_read(v, (unsigned)POTS_COUNT);
+                for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < 4u; i++) {
+                    float diff = v[i] - pots_last_sent[i];
+                    if (pots_last_sent[i] < 0.f || (diff > POTS_EPS || -diff > POTS_EPS)) {
+                        if (patch_api_push_knob((uint8_t)i, v[i]))
+                            pots_last_sent[i] = v[i];
+                        /* On overflow (false): do not retry; keep last_sent, next poll will try again. */
+                    }
+                }
+            }
+        }
 #endif
         sleep_us(100);
     }

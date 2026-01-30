@@ -5,6 +5,10 @@
  *   core/src/config_local.h
  *
  * Note: `config_local.h` is ignored by git (see .gitignore).
+ *
+ * USB MIDI is a build-time option: pass -D ENABLE_USB_MIDI=ON to the build script.
+ * Do not #define ENABLE_USB_MIDI here (CMake defines it when the option is ON).
+ * Optional in config_local.h: #define USB_MIDI_DEVICE_NAME "MyDevice"
  */
 
 #ifndef CONFIG_LOCAL_H
@@ -18,15 +22,29 @@
 #define PICO_AUDIO_I2S_CLOCK_PIN_BASE 6
 #define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 
+// Potentiometers (Daisy-style knob1..knob4). In the patch use [r knob1 @hv_param 0 1 0] etc.
+// If POTS_BACKEND is POTS_BACKEND_NONE (or POTS_COUNT 0), knob* receivers get no values.
+// #define POTS_BACKEND POTS_BACKEND_ADC
+// #define POTS_COUNT 4
+// #define POTS_ADC_GPIO_0 26
+// #define POTS_ADC_GPIO_1 27
+// #define POTS_ADC_GPIO_2 28
+// #define POTS_ADC_GPIO_3 29
+// #define POTS_POLL_MS 8
+// #define POTS_EPS 0.005f
+// #define POTS_ALPHA 0.25f
+
 // SSD1306 OLED (u8g2) over I2C (optional)
-// Default in repo: SDA=GPIO2, SCL=GPIO3, addr=0x3C (often I2C1).
-// Uncomment and override if your wiring differs.
+// Default in repo: SDA=GPIO2, SCL=GPIO3, addr=0x3C (often I2C1), 1 MHz.
+// Frame period and waveform decimation are derived from OLED_REFRESH_FPS.
+// Uncomment and override if your wiring differs. If 1 MHz is unstable, try 400000.
 //
+// #define OLED_REFRESH_FPS 60  // display FPS; frame ms and wave decim are derived
 // #define OLED_I2C_INSTANCE 1   // 0 = i2c0, 1 = i2c1
 // #define OLED_I2C_SDA_PIN 2
 // #define OLED_I2C_SCL_PIN 3
 // #define OLED_I2C_ADDR 0x3C
-// #define OLED_I2C_BAUD 400000
+// #define OLED_I2C_BAUD 1000000  // 1 MHz; use 400000 if bus glitches
 // #define OLED_WIDTH 128
 // #define OLED_HEIGHT 64
 

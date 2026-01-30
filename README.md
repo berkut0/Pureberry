@@ -61,12 +61,12 @@ I2S pins (DIN, BCK, LCK) are configured in:
 - `core/src/config.h` - default pins
 - `core/src/config_local.h` - local overrides (copy `config_local.h.example` for your board)
 
-Default pins:
-- DIN (data): GPIO 26
-- BCK (bit clock): GPIO 28
-- LCK (word clock/LRCLK): GPIO 27
+Default pins (free GPIO 26–29 for ADC potentiometers):
+- DIN (data): GPIO 5
+- LCK (word clock/LRCLK): GPIO 6
+- BCK (bit clock): GPIO 7
 
-See `config_local.h.example` for an example configuration (e.g., DIN=5, LRCLK=6, BCLK=7).
+Default peripherals do not conflict: OLED uses GPIO 2/3, WS2812 uses GPIO 16 (see `config.h`). See `config_local.h.example` for overrides.
 
 ## Flashing
 
@@ -104,8 +104,9 @@ Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `
 
 ### @hv_param and naming (patch names, not C)
 
-- **Inputs** (firmware → patch): Use `hw_*` in the patch, e.g. `[r hw_knob1 @hv_param 0 1 0]`, `[r hw_btn1 @hv_param 0 1 0 bool]`. Firmware sends to these receivers via hash/enum.
-- **Two classes of inputs** (for future knobs/I2C/encoders):
+- **Inputs** (firmware → patch): Use **Daisy-style** names for potentiometers: `knob1`, `knob2`, `knob3`, `knob4` (e.g. `[r knob1 @hv_param 0 1 0]`). Pins are configured in `config.h` (default: ADC GPIO 26–29). If **POTS_BACKEND** is **NONE** or **POTS_COUNT** is 0, `knob*` receivers receive no values (they stay silent).
+- **Other scalar inputs** (e.g. buttons): use `hw_*` names as needed; firmware pushes by hash.
+- **Two classes of inputs**:
   - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.
   - **Event/packet** ("button pressed", "I2C packet", "encoder +N") → use ordinary receivers/messages (not necessarily @hv_param) if it is not a UI parameter.
 - **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → queue) is in `patch_api.c`.

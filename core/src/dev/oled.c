@@ -139,7 +139,7 @@ void oled_task(void) {
     if (absolute_time_diff_us(now, g_next_frame) > 0) {
         return; // not yet
     }
-    g_next_frame = delayed_by_ms(now, 33); // ~30 FPS
+    g_next_frame = delayed_by_ms(now, 1000 / OLED_REFRESH_FPS);
     g_frame_counter++;
 
     uint8_t y[128];

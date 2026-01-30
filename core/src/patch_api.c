@@ -74,6 +74,27 @@ bool patch_api_push_polytouchin(uint8_t note, uint8_t pressure, uint8_t ch) {
     return ctrl_push_hash_fff(hash_polytouchin, (float)pressure, (float)note, (float)ch);
 }
 
+/* --- Knob (Daisy-style knob1..knob4) hashes; push by index. ADC driver does not know names. --- */
+
+#define POTS_KNOB_MAX 4
+static uint32_t hash_knob[POTS_KNOB_MAX];
+static bool knob_hashes_done;
+
+static void ensure_knob_hashes(void) {
+    if (knob_hashes_done) return;
+    hash_knob[0] = (uint32_t) hv_stringToHash("knob1");
+    hash_knob[1] = (uint32_t) hv_stringToHash("knob2");
+    hash_knob[2] = (uint32_t) hv_stringToHash("knob3");
+    hash_knob[3] = (uint32_t) hv_stringToHash("knob4");
+    knob_hashes_done = true;
+}
+
+bool patch_api_push_knob(uint8_t index, float value) {
+    ensure_knob_hashes();
+    if (index >= (unsigned) POTS_COUNT || index >= POTS_KNOB_MAX) return false;
+    return ctrl_push_hash_f(hash_knob[index], value);
+}
+
 /* --- Send hook: single entry point; route by sendHash to handlers that only parse and enqueue --- */
 
 static hv_uint32_t hash_set_led_color;

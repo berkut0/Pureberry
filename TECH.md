@@ -179,7 +179,7 @@ These rules define the architecture contracts that must be maintained for correc
 **Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_hash_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
 
 **Recommendations**:
-- For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`
+- For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`. Potentiometers (knob1..knob4) are only pushed when **POTS_BACKEND** is ADC and **POTS_COUNT** > 0; otherwise those receivers receive no values.
 - For discrete events (note on/off): ensure queue depth is sufficient for expected burst rates
 - Monitor queue pressure during development (add counters if needed)
 
