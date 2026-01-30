@@ -104,7 +104,7 @@ Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `
 
 ### @hv_param and naming (patch names, not C)
 
-- **Inputs** (firmware → patch): Use **Daisy-style** names for potentiometers: `knob1`, `knob2`, `knob3`, `knob4` (e.g. `[r knob1 @hv_param 0 1 0]`). Pins are configured in `config.h` (default: ADC GPIO 26–29). If **POTS_BACKEND** is **NONE** or **POTS_COUNT** is 0, `knob*` receivers receive no values (they stay silent).
+- **Inputs** (firmware → patch): Use **Daisy-style** names for potentiometers: `knob1`, `knob2`, `knob3`, `knob4` (e.g. `[r knob1 @hv_param 0 1 0]`). Potentiometers are **disabled by default**; enable in `core/src/config_local.h` by setting `POTS_BACKEND` to `POTS_BACKEND_ADC` and optionally overriding pins (default ADC GPIO 26–29). Values are sent **only when they change** (poll interval `POTS_POLL_MS`, deadband `POTS_EPS`, and 1-pole ADC smoothing). If **POTS_BACKEND** is **NONE** or **POTS_COUNT** is 0, `knob*` receivers receive no values (they stay silent).
 - **Other scalar inputs** (e.g. buttons): use `hw_*` names as needed; firmware pushes by hash.
 - **Two classes of inputs**:
   - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.

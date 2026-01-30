@@ -22,8 +22,8 @@
 #define PICO_AUDIO_I2S_CLOCK_PIN_BASE 6
 #define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 
-// Potentiometers (Daisy-style knob1..knob4). In the patch use [r knob1 @hv_param 0 1 0] etc.
-// If POTS_BACKEND is POTS_BACKEND_NONE (or POTS_COUNT 0), knob* receivers get no values.
+// Potentiometers (Daisy-style knob1..knob4). Disabled by default; uncomment below to enable.
+// In the patch use [r knob1 @hv_param 0 1 0] etc. If POTS_BACKEND is NONE (or POTS_COUNT 0), knob* receivers get no values.
 // #define POTS_BACKEND POTS_BACKEND_ADC
 // #define POTS_COUNT 4
 // #define POTS_ADC_GPIO_0 26

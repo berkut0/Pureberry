@@ -3,6 +3,7 @@
  * Contract: config provides GPIO pins; we map to adc_input = gpio - 26 and validate 26..29.
  */
 
+#include <stdio.h>
 #include "adc_pots.h"
 #include "config.h"
 #include "hardware/adc.h"
@@ -13,14 +14,14 @@
 #define POTS_ADC_LAST_GPIO  29
 #define ADC_MAX_RAW 4095.f
 
-static const unsigned int pots_gpio[4] = {
+static const unsigned int pots_gpio[POTS_MAX] = {
     POTS_ADC_GPIO_0,
     POTS_ADC_GPIO_1,
     POTS_ADC_GPIO_2,
     POTS_ADC_GPIO_3,
 };
 
-static float v_filtered[4];
+static float v_filtered[POTS_MAX];
 static bool initialized;
 
 static inline unsigned gpio_to_adc_input(unsigned int gpio) {
@@ -31,11 +32,17 @@ static inline unsigned gpio_to_adc_input(unsigned int gpio) {
 
 bool adc_pots_init(void) {
     if (POTS_COUNT == 0) return true;
-    adc_init();
-    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < 4u; i++) {
+    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
         unsigned int gpio = pots_gpio[i];
         unsigned ch = gpio_to_adc_input(gpio);
-        if (ch == (unsigned)-1) continue;
+        if (ch == (unsigned)-1) {
+            printf("ADC pots init failed: channel %u has invalid GPIO %u (must be 26-29)\n", i, gpio);
+            return false;
+        }
+    }
+    adc_init();
+    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
+        unsigned int gpio = pots_gpio[i];
         adc_gpio_init(gpio);
         v_filtered[i] = 0.f;
     }
@@ -46,7 +53,7 @@ bool adc_pots_init(void) {
 void adc_pots_read(float *out, unsigned n) {
     if (!out || n == 0 || !initialized) return;
     if (n > (unsigned)POTS_COUNT) n = (unsigned)POTS_COUNT;
-    if (n > 4u) n = 4u;
+    if (n > (unsigned)POTS_MAX) n = (unsigned)POTS_MAX;
 
     float alpha = POTS_ALPHA;
     for (unsigned i = 0; i < n; i++) {

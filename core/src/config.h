@@ -53,11 +53,16 @@
 #define POTS_BACKEND_EXPANDER 2
 
 #ifndef POTS_BACKEND
-#define POTS_BACKEND POTS_BACKEND_ADC
+#define POTS_BACKEND POTS_BACKEND_NONE
 #endif
 
 #ifndef POTS_COUNT
 #define POTS_COUNT 4
+#endif
+
+/** Maximum number of knob channels (array sizes, loop bounds). Kept at 4; no expansion in this iteration. */
+#ifndef POTS_MAX
+#define POTS_MAX 4
 #endif
 
 #ifndef POTS_ADC_GPIO_0

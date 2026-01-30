@@ -87,7 +87,7 @@ static audio_buffer_pool_t *audio_pool = NULL;
 static HeavyContextInterface *heavy_context = NULL;
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
-static float pots_last_sent[4];
+static float pots_last_sent[POTS_MAX];
 static uint32_t pots_last_poll_ms;
 #endif
 
@@ -245,10 +245,14 @@ int main() {
 #endif
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
-    if (POTS_COUNT > 0 && adc_pots_init()) {
-        for (int i = 0; i < 4 && i < POTS_COUNT; i++) pots_last_sent[i] = -1.f;
-        pots_last_poll_ms = 0;
-        printf("ADC pots initialized (knob1..knob%u, poll %d ms)\n", (unsigned)POTS_COUNT, POTS_POLL_MS);
+    if (POTS_COUNT > 0) {
+        if (adc_pots_init()) {
+            for (int i = 0; i < POTS_MAX && i < POTS_COUNT; i++) pots_last_sent[i] = -1.f;
+            pots_last_poll_ms = 0;
+            printf("ADC pots initialized (knob1..knob%u, poll %d ms)\n", (unsigned)POTS_COUNT, POTS_POLL_MS);
+        } else {
+            printf("ADC pots disabled (init failed; check GPIO 26-29 in config_local.h).\n");
+        }
     }
 #endif
 
@@ -270,14 +274,14 @@ int main() {
             uint32_t now = to_ms_since_boot(get_absolute_time());
             if (now - pots_last_poll_ms >= (uint32_t)POTS_POLL_MS) {
                 pots_last_poll_ms = now;
-                float v[4];
+                float v[POTS_MAX];
                 adc_pots_read(v, (unsigned)POTS_COUNT);
-                for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < 4u; i++) {
+                for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
                     float diff = v[i] - pots_last_sent[i];
                     if (pots_last_sent[i] < 0.f || (diff > POTS_EPS || -diff > POTS_EPS)) {
                         if (patch_api_push_knob((uint8_t)i, v[i]))
                             pots_last_sent[i] = v[i];
-                        /* On overflow (false): do not retry; keep last_sent, next poll will try again. */
+                        /* On ctrl_queue overflow (false): skip updating last_sent so the next poll may retry. */
                     }
                 }
             }
