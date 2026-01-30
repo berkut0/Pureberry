@@ -1,0 +1,11 @@
+#N canvas 827 239 734 565 12;
+#X obj 241 286 hv.osc~ sine;
+#X obj 241 252 sig~ 440;
+#X obj 358 252 loadbang;
+#X msg 358 276 0;
+#X obj 241 349 dac~;
+#X connect 0 0 4 0;
+#X connect 0 0 4 1;
+#X connect 1 0 0 0;
+#X connect 2 0 3 0;
+#X connect 3 0 0 1;
