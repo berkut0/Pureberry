@@ -46,9 +46,8 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
    - Creates Heavy context interface with a fixed name: `Heavy_patch.h/cpp`
    - Generates audio processing functions
    - Search paths (`-p`) configured automatically for heavylib abstractions:
-     - Checks for vendored `third_party/heavylib` submodule
-     - Falls back to plugdata installation path if submodule not found
-     - Supports custom paths via `HVCC_SEARCH_PATHS` environment variable
+     - Uses vendored `third_party/heavylib` submodule when present
+     - Optional custom paths via `HVCC_SEARCH_PATHS` environment variable
 
 2. **Core Project Integration**
    - Core firmware project is used directly (not copied)
@@ -386,9 +385,8 @@ The project supports Heavy-compatible abstractions from the `heavylib` library, 
 3. Build script automatically configures hvcc search paths
 
 **Search Path Resolution**:
-1. Primary: Checks for `third_party/heavylib` submodule
-2. Fallback: Uses plugdata installation path (`C:\Users\Public\Documents\plugdata\Abstractions\heavylib` on Windows)
-3. Custom: Can override via `HVCC_SEARCH_PATHS` environment variable
+1. Vendored: Uses `third_party/heavylib` submodule when present
+2. Custom: Additional paths via `HVCC_SEARCH_PATHS` environment variable (semicolon-separated on Windows)
 
 **Note**: hvcc does not search recursively, so the build script explicitly adds subdirectories like `hv.osc`, `hv.lfo`, `hv.filters` to the search paths.
 

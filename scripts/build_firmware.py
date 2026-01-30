@@ -261,7 +261,7 @@ def get_project_root() -> Path:
 
 
 def get_hvcc_search_paths() -> List[str]:
-    """Get default hvcc abstraction search paths."""
+    """Return hvcc abstraction search paths: HVCC_SEARCH_PATHS env + vendored third_party/heavylib only."""
     paths: List[Path] = []
 
     env_paths = os.environ.get("HVCC_SEARCH_PATHS", "").strip()
@@ -278,13 +278,6 @@ def get_hvcc_search_paths() -> List[str]:
         paths.append(vendored_heavylib / "hv.lfo")
         paths.append(vendored_heavylib / "hv.osc")
         paths.append(vendored_heavylib / "hv.filters")
-
-    plugdata_abstractions = Path(r"C:\Users\Public\Documents\plugdata\Abstractions")
-    heavylib_dir = plugdata_abstractions / "heavylib"
-    paths.append(heavylib_dir)
-    paths.append(heavylib_dir / "hv.lfo")
-    paths.append(heavylib_dir / "hv.osc")
-    paths.append(heavylib_dir / "hv.filters")
 
     existing: List[str] = []
     seen = set()
