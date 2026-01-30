@@ -67,6 +67,49 @@ static void oled_i2c_bus_recover(void) {
     gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_IN);
 }
 
+/* Dashed line pattern: segment length and gap in pixels. */
+#define DASH_SEGMENT_LEN  4
+#define DASH_GAP_LEN     4
+
+static void oled_draw_dashed_hline(u8g2_t *u8g2, uint8_t x0, uint8_t x1, uint8_t y) {
+    unsigned int x = x0;
+    while (x <= x1) {
+        unsigned int seg_end = x + DASH_SEGMENT_LEN;
+        if (seg_end > x1) seg_end = x1 + 1;
+        u8g2_DrawHLine(u8g2, (uint8_t)x, y, (uint8_t)(seg_end - x));
+        x = seg_end + DASH_GAP_LEN;
+    }
+}
+
+static void oled_draw_dashed_vline(u8g2_t *u8g2, uint8_t x, uint8_t y0, uint8_t y1) {
+    unsigned int y = y0;
+    while (y <= y1) {
+        unsigned int seg_end = y + DASH_SEGMENT_LEN;
+        if (seg_end > y1) seg_end = y1 + 1;
+        u8g2_DrawVLine(u8g2, x, (uint8_t)y, (uint8_t)(seg_end - y));
+        y = seg_end + DASH_GAP_LEN;
+    }
+}
+
+/* Grid: 3 horizontal and 5 vertical dashed lines over the waveform area. */
+#define GRID_TOP_Y    0
+#define GRID_BOTTOM_Y (OLED_HEIGHT - 1)
+#define GRID_LEFT_X   0
+#define GRID_RIGHT_X  (OLED_WIDTH - 1)
+
+static void oled_draw_grid(u8g2_t *u8g2) {
+    /* 3 horizontal lines: divide height into 4 bands → y at 1/4, 2/4, 3/4 */
+    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 4);      /* 16 */
+    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 2);      /* 32 */
+    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, (3 * OLED_HEIGHT) / 4); /* 48 */
+    /* 5 vertical lines: divide width into 6 bands → x at 1/6 .. 5/6 */
+    oled_draw_dashed_vline(u8g2, OLED_WIDTH / 6,                  GRID_TOP_Y, GRID_BOTTOM_Y);
+    oled_draw_dashed_vline(u8g2, (2 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
+    oled_draw_dashed_vline(u8g2, (3 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
+    oled_draw_dashed_vline(u8g2, (4 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
+    oled_draw_dashed_vline(u8g2, (5 * OLED_WIDTH) / 6,            GRID_TOP_Y, GRID_BOTTOM_Y);
+}
+
 static void oled_draw_boot(void) {
     u8g2_ClearBuffer(&g_u8g2);
     u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
@@ -83,9 +126,7 @@ static void oled_draw_waveform(const uint8_t y[128]) {
     snprintf(line, sizeof(line), "frame %lu", (unsigned long) g_frame_counter);
     u8g2_DrawStr(&g_u8g2, 0, 10, line);
 
-    // Draw center line (y = 32) and waveform below the header area.
-    const uint8_t y_center = (uint8_t) (OLED_HEIGHT / 2);
-    u8g2_DrawHLine(&g_u8g2, 0, y_center, OLED_WIDTH);
+    oled_draw_grid(&g_u8g2);
 
     uint8_t prev_y = y[0];
     for (int x = 0; x < 128; x++) {
