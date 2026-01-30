@@ -22,14 +22,13 @@
 #define PICO_AUDIO_I2S_CLOCK_PIN_BASE 6
 #define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 
-// Potentiometers (Daisy-style knob1..knob4). Disabled by default; uncomment below to enable.
-// In the patch use [r knob1 @hv_param 0 1 0] etc. If POTS_BACKEND is NONE (or POTS_COUNT 0), knob* receivers get no values.
+// Potentiometers (Daisy-style knob1..knob4). Config by ADC channels; physical pins come from SDK (chip-dependent).
+// Disabled by default; uncomment below to enable. In the patch use [r knob1 @hv_param 0 1 0] etc.
+// If POTS_BACKEND is NONE (or POTS_COUNT 0), knob* receivers get no values.
+// On RP2350B, channels 0..7 are available; you can set POTS_ADC_FIRST_CHANNEL to e.g. 4 if 0..3 are used elsewhere.
 // #define POTS_BACKEND POTS_BACKEND_ADC
 // #define POTS_COUNT 4
-// #define POTS_ADC_GPIO_0 26
-// #define POTS_ADC_GPIO_1 27
-// #define POTS_ADC_GPIO_2 28
-// #define POTS_ADC_GPIO_3 29
+// #define POTS_ADC_FIRST_CHANNEL 0
 // #define POTS_POLL_MS 8
 // #define POTS_EPS 0.005f
 // #define POTS_ALPHA 0.25f

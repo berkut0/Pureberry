@@ -61,7 +61,7 @@ I2S pins (DIN, BCK, LCK) are configured in:
 - `core/src/config.h` - default pins
 - `core/src/config_local.h` - local overrides (copy `config_local.h.example` for your board)
 
-Default pins (free GPIO 26–29 for ADC potentiometers):
+Default pins (on typical RP2040/RP2350A builds, GPIO 26–29 remain free for on-chip ADC):
 - DIN (data): GPIO 5
 - LCK (word clock/LRCLK): GPIO 6
 - BCK (bit clock): GPIO 7
@@ -104,7 +104,7 @@ Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `
 
 ### @hv_param and naming (patch names, not C)
 
-- **Inputs** (firmware → patch): Use **Daisy-style** names for potentiometers: `knob1`, `knob2`, `knob3`, `knob4` (e.g. `[r knob1 @hv_param 0 1 0]`). Potentiometers are **disabled by default**; enable in `core/src/config_local.h` by setting `POTS_BACKEND` to `POTS_BACKEND_ADC` and optionally overriding pins (default ADC GPIO 26–29). Values are sent **only when they change** (poll interval `POTS_POLL_MS`, deadband `POTS_EPS`, and 1-pole ADC smoothing). If **POTS_BACKEND** is **NONE** or **POTS_COUNT** is 0, `knob*` receivers receive no values (they stay silent).
+- **Inputs** (firmware → patch): Use **Daisy-style** names for potentiometers: `knob1`, `knob2`, `knob3`, `knob4` (e.g. `[r knob1 @hv_param 0 1 0]`). Potentiometers are **disabled by default**; enable in `core/src/config_local.h` by setting `POTS_BACKEND` to `POTS_BACKEND_ADC`. Configuration is by **ADC channel** (first channel `POTS_ADC_FIRST_CHANNEL`, count `POTS_COUNT`); physical pins are determined by the SDK and vary by chip (e.g. RP2040/RP2350A: channels 0–3 on GPIO 26–29; RP2350B: channels 0–7 on GPIO 40–47). Values are sent **only when they change** (poll interval `POTS_POLL_MS`, deadband `POTS_EPS`, and 1-pole ADC smoothing). If **POTS_BACKEND** is **NONE** or **POTS_COUNT** is 0, `knob*` receivers receive no values (they stay silent).
 - **Other scalar inputs** (e.g. buttons): use `hw_*` names as needed; firmware pushes by hash.
 - **Two classes of inputs**:
   - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.

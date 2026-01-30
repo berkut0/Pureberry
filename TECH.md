@@ -179,7 +179,7 @@ These rules define the architecture contracts that must be maintained for correc
 **Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_hash_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
 
 **Recommendations**:
-- For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`. Potentiometers (knob1..knob4) are only pushed when **POTS_BACKEND** is ADC and **POTS_COUNT** > 0; values are sent only on change (poll interval **POTS_POLL_MS**, deadband **POTS_EPS**, 1-pole smoothing **POTS_ALPHA**). Otherwise those receivers receive no values.
+- For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`. Potentiometers (knob1..knob4) are configured by **ADC channel** (first channel **POTS_ADC_FIRST_CHANNEL**, count **POTS_COUNT**); physical pins come from the SDK (chip-dependent). They are only pushed when **POTS_BACKEND** is ADC and **POTS_COUNT** > 0; values are sent only on change (poll interval **POTS_POLL_MS**, deadband **POTS_EPS**, 1-pole smoothing **POTS_ALPHA**). Otherwise those receivers receive no values.
 - For discrete events (note on/off): ensure queue depth is sufficient for expected burst rates
 - Monitor queue pressure during development (add counters if needed)
 
@@ -202,7 +202,7 @@ Multicore changes should be validated under worst-case load, not only idle condi
 ### Target Hardware
 - **Microcontroller**: Raspberry Pi RP2350 (RP2350-Zero board)
 - **Audio DAC**: PCM5102A (I2S interface)
-- **Connections**: пины I2S настраиваются в `config.h` / `config_local.h` (см. раздел I2S Configuration). По умолчанию: DIN→GPIO 26, BCK→GPIO 27, LCK→GPIO 28. Для своей платы скопируйте `config_local.h.example` в `config_local.h` и задайте нужные номера пинов.
+- **Connections**: I2S pins are configured in `config.h` / `config_local.h` (see I2S Configuration). Defaults: DIN→GPIO 5, LCK (LRCLK)→GPIO 6, BCK→GPIO 7. Copy `config_local.h.example` to `config_local.h` and set pins for your board.
 - Common ground required
 
 ### Development Tools

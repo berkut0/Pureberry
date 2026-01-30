@@ -47,7 +47,7 @@
 #endif
 
 // Potentiometers (knob1..knob4 @hv_param). Single axis: config only, no CMake flag.
-// POTS_BACKEND: NONE = no hardware, ADC = on-chip ADC (GPIO 26-29), EXPANDER = future.
+// POTS_BACKEND: NONE = no hardware, ADC = on-chip ADC, EXPANDER = future.
 #define POTS_BACKEND_NONE    0
 #define POTS_BACKEND_ADC     1
 #define POTS_BACKEND_EXPANDER 2
@@ -65,17 +65,10 @@
 #define POTS_MAX 4
 #endif
 
-#ifndef POTS_ADC_GPIO_0
-#define POTS_ADC_GPIO_0 26
-#endif
-#ifndef POTS_ADC_GPIO_1
-#define POTS_ADC_GPIO_1 27
-#endif
-#ifndef POTS_ADC_GPIO_2
-#define POTS_ADC_GPIO_2 28
-#endif
-#ifndef POTS_ADC_GPIO_3
-#define POTS_ADC_GPIO_3 29
+/** First ADC channel for knob1; channels are consecutive (first, first+1, ...); count = POTS_COUNT.
+ *  Physical pin = ADC_BASE_PIN + channel (from SDK; varies by chip, e.g. RP2040/RP2350A 26–29, RP2350B 40–47). */
+#ifndef POTS_ADC_FIRST_CHANNEL
+#define POTS_ADC_FIRST_CHANNEL 0
 #endif
 
 // Poll/smoothing: avoid zipper noise and ctrl_queue overflow (drop newest).

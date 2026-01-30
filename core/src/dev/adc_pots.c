@@ -1,6 +1,7 @@
 /**
- * ADC potentiometers: init, read, 1-pole filter. GPIO 26-29 → ADC0-3.
- * Contract: config provides GPIO pins; we map to adc_input = gpio - 26 and validate 26..29.
+ * ADC potentiometers: init, read, 1-pole filter.
+ * Config: first channel (POTS_ADC_FIRST_CHANNEL) and count (POTS_COUNT).
+ * Physical pins are determined by the SDK: gpio = ADC_BASE_PIN + channel (chip-dependent).
  */
 
 #include <stdio.h>
@@ -10,39 +11,25 @@
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
 
-#define POTS_ADC_FIRST_GPIO 26
-#define POTS_ADC_LAST_GPIO  29
 #define ADC_MAX_RAW 4095.f
-
-static const unsigned int pots_gpio[POTS_MAX] = {
-    POTS_ADC_GPIO_0,
-    POTS_ADC_GPIO_1,
-    POTS_ADC_GPIO_2,
-    POTS_ADC_GPIO_3,
-};
 
 static float v_filtered[POTS_MAX];
 static bool initialized;
 
-static inline unsigned gpio_to_adc_input(unsigned int gpio) {
-    if (gpio < POTS_ADC_FIRST_GPIO || gpio > POTS_ADC_LAST_GPIO)
-        return (unsigned)-1;
-    return gpio - POTS_ADC_FIRST_GPIO;
-}
-
 bool adc_pots_init(void) {
     if (POTS_COUNT == 0) return true;
-    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
-        unsigned int gpio = pots_gpio[i];
-        unsigned ch = gpio_to_adc_input(gpio);
-        if (ch == (unsigned)-1) {
-            printf("ADC pots init failed: channel %u has invalid GPIO %u (must be 26-29)\n", i, gpio);
-            return false;
-        }
+    unsigned first = (unsigned)POTS_ADC_FIRST_CHANNEL;
+    unsigned count = (unsigned)POTS_COUNT;
+    unsigned max_user_ch = NUM_ADC_CHANNELS - 2u; /* last channel is temperature */
+    if (first + count - 1u > max_user_ch) {
+        printf("ADC pots init failed: channels %u..%u exceed max user channel %u\n",
+               first, first + count - 1u, max_user_ch);
+        return false;
     }
     adc_init();
-    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
-        unsigned int gpio = pots_gpio[i];
+    for (unsigned i = 0; i < count && i < (unsigned)POTS_MAX; i++) {
+        unsigned ch = first + i;
+        uint gpio = ADC_BASE_PIN + ch;
         adc_gpio_init(gpio);
         v_filtered[i] = 0.f;
     }
@@ -55,18 +42,15 @@ void adc_pots_read(float *out, unsigned n) {
     if (n > (unsigned)POTS_COUNT) n = (unsigned)POTS_COUNT;
     if (n > (unsigned)POTS_MAX) n = (unsigned)POTS_MAX;
 
+    unsigned first = (unsigned)POTS_ADC_FIRST_CHANNEL;
     float alpha = POTS_ALPHA;
     for (unsigned i = 0; i < n; i++) {
-        unsigned int gpio = pots_gpio[i];
-        unsigned ch = gpio_to_adc_input(gpio);
-        float raw_norm = 0.f;
-        if (ch != (unsigned)-1) {
-            adc_select_input(ch);
-            uint16_t raw = adc_read();
-            raw_norm = (float)raw / ADC_MAX_RAW;
-            if (raw_norm < 0.f) raw_norm = 0.f;
-            if (raw_norm > 1.f) raw_norm = 1.f;
-        }
+        unsigned ch = first + i;
+        adc_select_input(ch);
+        uint16_t raw = adc_read();
+        float raw_norm = (float)raw / ADC_MAX_RAW;
+        if (raw_norm < 0.f) raw_norm = 0.f;
+        if (raw_norm > 1.f) raw_norm = 1.f;
         v_filtered[i] = v_filtered[i] + alpha * (raw_norm - v_filtered[i]);
         out[i] = v_filtered[i];
     }

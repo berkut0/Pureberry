@@ -1,6 +1,7 @@
 /**
  * ADC potentiometers driver (knob1..knob4).
- * Reads GPIO 26-29 (ADC0-3), normalizes to 0..1. No hv_setSendHook; push is done by patch_api from main loop.
+ * Config: first channel POTS_ADC_FIRST_CHANNEL, count POTS_COUNT; pins from SDK (ADC_BASE_PIN + channel).
+ * Normalizes to 0..1. No hv_setSendHook; push is done by patch_api from main loop.
  */
 
 #ifndef ADC_POTS_H
@@ -16,7 +17,7 @@ extern "C" {
 /**
  * Initialize ADC and GPIO for potentiometer channels.
  * Only valid when POTS_BACKEND == POTS_BACKEND_ADC.
- * Uses POTS_COUNT and POTS_ADC_GPIO_0..3 from config.
+ * Uses POTS_ADC_FIRST_CHANNEL and POTS_COUNT from config.
  * Returns false if config invalid or init failed.
  */
 bool adc_pots_init(void);
