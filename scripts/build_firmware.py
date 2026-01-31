@@ -29,6 +29,31 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 LOGGER_NAME = "build_firmware"
 DEFAULT_LOG_LEVEL = "normal"
 
+# CMake feature options exposed as first-class CLI flags.
+# These are declared as `option(...)` in `core/CMakeLists.txt`.
+FEATURE_OPTIONS = [
+    {
+        "flag": "--usb-midi",
+        "cmake_var": "ENABLE_USB_MIDI",
+        "help": "Enable USB MIDI support (CMake: ENABLE_USB_MIDI).",
+    },
+    {
+        "flag": "--ws2812",
+        "cmake_var": "ENABLE_WS2812",
+        "help": "Enable WS2812 LED support (CMake: ENABLE_WS2812).",
+    },
+    {
+        "flag": "--oled",
+        "cmake_var": "ENABLE_OLED",
+        "help": "Enable SSD1306 OLED support (CMake: ENABLE_OLED).",
+    },
+    {
+        "flag": "--i2c-dma",
+        "cmake_var": "ENABLE_I2C_DMA",
+        "help": "Enable non-blocking I2C TX via DMA helper (CMake: ENABLE_I2C_DMA).",
+    },
+]
+
 # Console verbosity mapping. File logging follows selected log level.
 LOG_LEVELS = {
     "quiet": logging.ERROR,
@@ -611,6 +636,23 @@ def build_firmware(
         return False
 
 
+def _upsert_cmake_define(defines: List[str], var: str, value: str) -> None:
+    """
+    Replace any existing definition of `var` and append the new value.
+
+    We accept either:
+    - `VAR=VALUE`
+    - CMake typed cache form `VAR:TYPE=VALUE`
+    """
+    prefixes = (f"{var}=", f"{var}:")
+    defines[:] = [d for d in defines if not d.startswith(prefixes)]
+    defines.append(f"{var}={value}")
+
+
+def _cmake_on_off(value: bool) -> str:
+    return "ON" if value else "OFF"
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build RP2350 firmware from Pure Data patch"
@@ -684,6 +726,23 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         metavar="VAR=VALUE",
         help="Pass CMake defines (e.g., -D ENABLE_WS2812=ON). Can be used multiple times.",
     )
+
+    feature_group = parser.add_argument_group("Feature flags (CMake options)")
+    for feature in FEATURE_OPTIONS:
+        flag = feature["flag"]
+        cmake_var = feature["cmake_var"]
+        help_text = feature["help"]
+        dest = cmake_var.lower()
+
+        # Python 3.9+ provides a nice standard way to support both
+        # `--foo` and `--no-foo` without defining two arguments.
+        feature_group.add_argument(
+            flag,
+            dest=dest,
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=help_text,
+        )
     return parser.parse_args(argv)
 
 
@@ -757,6 +816,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         raise SystemExit(1)
 
     cmake_defines = args.cmake_defines or []
+    for feature in FEATURE_OPTIONS:
+        cmake_var = feature["cmake_var"]
+        dest = cmake_var.lower()
+        value = getattr(args, dest, None)
+        if value is None:
+            continue
+        _upsert_cmake_define(cmake_defines, cmake_var, _cmake_on_off(bool(value)))
+
     firmware_build_dir = build_dir / "firmware-build"
 
     # If build dir is locked and --clean is enabled, we already tried cleaning above.
