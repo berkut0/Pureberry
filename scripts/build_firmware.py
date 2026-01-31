@@ -38,6 +38,11 @@ FEATURE_OPTIONS = [
         "help": "Enable USB MIDI support (CMake: ENABLE_USB_MIDI).",
     },
     {
+        "flag": "--usb-audio",
+        "cmake_var": "ENABLE_USB_AUDIO",
+        "help": "Enable USB Audio device mode (CMake: ENABLE_USB_AUDIO).",
+    },
+    {
         "flag": "--ws2812",
         "cmake_var": "ENABLE_WS2812",
         "help": "Enable WS2812 LED support (CMake: ENABLE_WS2812).",

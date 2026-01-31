@@ -62,6 +62,33 @@
 #define PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED 0
 #endif
 
+// I2S output buffering and DMA tuning
+//
+// pico-extras (audio_i2s.c) will output a fixed-length silence buffer when it can't pull
+// the next consumer buffer in time. Increasing consumer buffering reduces the chance of
+// audible dropouts under bus/DMA contention (e.g., concurrent I2C OLED updates).
+#ifndef AUDIO_I2S_CONSUMER_BUFFER_COUNT
+#ifdef ENABLE_USB_AUDIO
+#define AUDIO_I2S_CONSUMER_BUFFER_COUNT 4
+#else
+#define AUDIO_I2S_CONSUMER_BUFFER_COUNT 2
+#endif
+#endif
+
+#ifndef AUDIO_I2S_CONSUMER_SAMPLES_PER_BUFFER
+#define AUDIO_I2S_CONSUMER_SAMPLES_PER_BUFFER 256
+#endif
+
+// Prefer the I2S DMA channel in the DMA scheduler. This may help when other DMA channels
+// (e.g., I2C DMA) run concurrently.
+#ifndef AUDIO_I2S_DMA_HIGH_PRIORITY
+#ifdef ENABLE_USB_AUDIO
+#define AUDIO_I2S_DMA_HIGH_PRIORITY 1
+#else
+#define AUDIO_I2S_DMA_HIGH_PRIORITY 0
+#endif
+#endif
+
 // Potentiometers (knob1..knob4 @hv_param). Single axis: config only, no CMake flag.
 // POTS_BACKEND: NONE = no hardware, ADC = on-chip ADC, EXPANDER = future.
 #define POTS_BACKEND_NONE    0
