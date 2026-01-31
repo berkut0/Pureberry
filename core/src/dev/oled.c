@@ -14,10 +14,70 @@
 #include "dev/u8g2_pico.h"
 #include "multicore_display.h"
 
+#ifdef ENABLE_I2C_DMA
+#include "drv/i2c_dma.h"
+#include "hardware/regs/i2c.h"
+#endif
+
 static u8g2_t g_u8g2;
 static bool g_oled_ready;
 static absolute_time_t g_next_frame;
 static uint32_t g_frame_counter;
+
+#ifdef ENABLE_I2C_DMA
+static i2c_dma_t g_oled_i2c_dma;
+static bool g_oled_i2c_dma_ready;
+static uint32_t g_oled_cmd_window[7];
+static uint32_t g_oled_cmd_data[1 + (OLED_WIDTH * (OLED_HEIGHT / 8))];
+
+static bool oled_queue_full_frame_dma(void) {
+    if (!g_oled_i2c_dma_ready) return false;
+    if (i2c_dma_busy(&g_oled_i2c_dma)) return false;
+
+    uint8_t const window_bytes[7] = {
+        0x00,                  // control byte: command stream
+        0x21, 0x00, (uint8_t)(OLED_WIDTH - 1), // column address
+        0x22, 0x00, (uint8_t)((OLED_HEIGHT / 8) - 1) // page address
+    };
+    if (i2c_dma_build_write_cmds(g_oled_cmd_window, sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+                                 window_bytes, sizeof(window_bytes), false, true) == 0) {
+        return false;
+    }
+
+    // Build data transaction: control byte 0x40 + framebuffer (1 + 1024 bytes).
+    uint8_t *fb = u8g2_GetBufferPtr(&g_u8g2);
+    if (!fb) return false;
+    size_t fb_len = (size_t)OLED_WIDTH * (size_t)(OLED_HEIGHT / 8);
+
+    g_oled_cmd_data[0] = 0x40u; // control byte: data stream
+    for (size_t i = 0; i < fb_len; i++) {
+        g_oled_cmd_data[1 + i] = (uint32_t)fb[i] & 0xFFu;
+    }
+    g_oled_cmd_data[fb_len] |= I2C_IC_DATA_CMD_STOP_BITS; // STOP on the last byte (control+fb)
+
+    // Queue window, then data. Use a generous timeout for the full-frame transfer.
+    i2c_dma_txn_t t1 = {
+        .addr7 = (uint8_t)OLED_I2C_ADDR,
+        .cmds = g_oled_cmd_window,
+        .cmd_count = sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+        .timeout_us = 20000u,
+        .done = NULL,
+        .user = NULL,
+    };
+    i2c_dma_txn_t t2 = {
+        .addr7 = (uint8_t)OLED_I2C_ADDR,
+        .cmds = g_oled_cmd_data,
+        .cmd_count = 1 + fb_len,
+        .timeout_us = 50000u,
+        .done = NULL,
+        .user = NULL,
+    };
+
+    if (!i2c_dma_submit(&g_oled_i2c_dma, &t1)) return false;
+    if (!i2c_dma_submit(&g_oled_i2c_dma, &t2)) return false;
+    return true;
+}
+#endif
 
 static i2c_inst_t *oled_get_i2c(void) {
 #if OLED_I2C_INSTANCE == 0
@@ -139,7 +199,13 @@ static void oled_draw_waveform(const uint8_t y[128]) {
         prev_y = yy;
     }
 
+#ifdef ENABLE_I2C_DMA
+    if (!oled_queue_full_frame_dma()) {
+        // DMA busy or not ready: skip this frame update.
+    }
+#else
     u8g2_SendBuffer(&g_u8g2);
+#endif
 }
 
 bool oled_init(void) {
@@ -155,6 +221,12 @@ bool oled_init(void) {
     gpio_pull_up(OLED_I2C_SCL_PIN);
 
     i2c_init(i2c, OLED_I2C_BAUD);
+
+#ifdef ENABLE_I2C_DMA
+    // I2C DMA is used only for OLED refresh (TX). u8g2 init remains blocking and is OK at boot.
+    i2c_dma_init(&g_oled_i2c_dma, i2c, -1, 1);
+    g_oled_i2c_dma_ready = true;
+#endif
 
     // Setup u8g2 for SSD1306 I2C 128x64 (full framebuffer)
     u8g2_Setup_ssd1306_i2c_128x64_noname_f(&g_u8g2, U8G2_R0, u8x8_byte_pico_hw_i2c, u8x8_gpio_and_delay_pico);
@@ -176,6 +248,13 @@ bool oled_init(void) {
 void oled_task(void) {
     if (!g_oled_ready) return;
 
+#ifdef ENABLE_I2C_DMA
+    if (g_oled_i2c_dma_ready) {
+        // Progress DMA completion state machine frequently (non-blocking).
+        i2c_dma_poll(&g_oled_i2c_dma);
+    }
+#endif
+
     absolute_time_t now = get_absolute_time();
     if (absolute_time_diff_us(now, g_next_frame) > 0) {
         return; // not yet
@@ -194,7 +273,13 @@ void oled_task(void) {
         u8g2_DrawFrame(&g_u8g2, 0, 20, OLED_WIDTH, OLED_HEIGHT - 20);
         int x = (int) (g_frame_counter % (OLED_WIDTH - 6));
         u8g2_DrawBox(&g_u8g2, x, 24, 6, 6);
+#ifdef ENABLE_I2C_DMA
+        if (!oled_queue_full_frame_dma()) {
+            // DMA busy or not ready: skip this frame update.
+        }
+#else
         u8g2_SendBuffer(&g_u8g2);
+#endif
     }
 }
 
