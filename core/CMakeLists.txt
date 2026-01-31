@@ -37,6 +37,7 @@ set(CMAKE_CXX_STANDARD 17)
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
 option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
+option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -46,6 +47,14 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HV_BARE_METAL)
 
 # Make project config visible to pico-sdk (and thus to pico-extras sources too)
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_config.h)
+
+# Optional I2C DMA helper (device drivers may use it to avoid blocking I2C writes)
+if(ENABLE_I2C_DMA)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_I2C_DMA)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/drv/i2c_dma.c
+    )
+endif()
 
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
