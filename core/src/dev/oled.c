@@ -28,32 +28,41 @@ static uint32_t g_frame_counter;
 static i2c_dma_t g_oled_i2c_dma;
 static bool g_oled_i2c_dma_ready;
 static uint32_t g_oled_cmd_window[7];
-static uint32_t g_oled_cmd_data[1 + (OLED_WIDTH * (OLED_HEIGHT / 8))];
+
+enum { OLED_FB_LEN = OLED_WIDTH * (OLED_HEIGHT / 8) };
+static uint32_t g_oled_cmd_data[1 + OLED_FB_LEN];
+
+static bool oled_dma_prepare_window_cmds(void) {
+    uint8_t const window_bytes[7] = {
+        0x00,                                       // control byte: command stream
+        0x21, 0x00, (uint8_t)(OLED_WIDTH - 1),       // column address
+        0x22, 0x00, (uint8_t)((OLED_HEIGHT / 8) - 1) // page address
+    };
+
+    return i2c_dma_build_write_cmds(
+               g_oled_cmd_window,
+               sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+               window_bytes,
+               sizeof(window_bytes),
+               false,
+               true) == (sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]));
+}
 
 static bool oled_queue_full_frame_dma(void) {
     if (!g_oled_i2c_dma_ready) return false;
     if (i2c_dma_busy(&g_oled_i2c_dma)) return false;
 
-    uint8_t const window_bytes[7] = {
-        0x00,                  // control byte: command stream
-        0x21, 0x00, (uint8_t)(OLED_WIDTH - 1), // column address
-        0x22, 0x00, (uint8_t)((OLED_HEIGHT / 8) - 1) // page address
-    };
-    if (i2c_dma_build_write_cmds(g_oled_cmd_window, sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
-                                 window_bytes, sizeof(window_bytes), false, true) == 0) {
-        return false;
-    }
-
-    // Build data transaction: control byte 0x40 + framebuffer (1 + 1024 bytes).
-    uint8_t *fb = u8g2_GetBufferPtr(&g_u8g2);
+    // Build data transaction: control byte 0x40 + framebuffer bytes.
+    uint8_t const *fb = u8g2_GetBufferPtr(&g_u8g2);
     if (!fb) return false;
-    size_t fb_len = (size_t)OLED_WIDTH * (size_t)(OLED_HEIGHT / 8);
-
     g_oled_cmd_data[0] = 0x40u; // control byte: data stream
-    for (size_t i = 0; i < fb_len; i++) {
-        g_oled_cmd_data[1 + i] = (uint32_t)fb[i] & 0xFFu;
+    for (size_t i = 0; i < (size_t)OLED_FB_LEN; i++) {
+        uint32_t v = (uint32_t)fb[i] & 0xFFu;
+        if (i == (size_t)(OLED_FB_LEN - 1)) {
+            v |= I2C_IC_DATA_CMD_STOP_BITS;
+        }
+        g_oled_cmd_data[1 + i] = v;
     }
-    g_oled_cmd_data[fb_len] |= I2C_IC_DATA_CMD_STOP_BITS; // STOP on the last byte (control+fb)
 
     // Queue window, then data. Use a generous timeout for the full-frame transfer.
     i2c_dma_txn_t t1 = {
@@ -67,7 +76,7 @@ static bool oled_queue_full_frame_dma(void) {
     i2c_dma_txn_t t2 = {
         .addr7 = (uint8_t)OLED_I2C_ADDR,
         .cmds = g_oled_cmd_data,
-        .cmd_count = 1 + fb_len,
+        .cmd_count = sizeof(g_oled_cmd_data) / sizeof(g_oled_cmd_data[0]),
         .timeout_us = 50000u,
         .done = NULL,
         .user = NULL,
@@ -78,6 +87,16 @@ static bool oled_queue_full_frame_dma(void) {
     return true;
 }
 #endif
+
+static void oled_flush(void) {
+#ifdef ENABLE_I2C_DMA
+    if (g_oled_i2c_dma_ready) {
+        (void)oled_queue_full_frame_dma();
+        return;
+    }
+#endif
+    u8g2_SendBuffer(&g_u8g2);
+}
 
 static i2c_inst_t *oled_get_i2c(void) {
 #if OLED_I2C_INSTANCE == 0
@@ -158,11 +177,11 @@ static void oled_draw_dashed_vline(u8g2_t *u8g2, uint8_t x, uint8_t y0, uint8_t 
 #define GRID_RIGHT_X  (OLED_WIDTH - 1)
 
 static void oled_draw_grid(u8g2_t *u8g2) {
-    /* 3 horizontal lines: divide height into 4 bands → y at 1/4, 2/4, 3/4 */
+    /* 3 horizontal lines: divide height into 4 bands -> y at 1/4, 2/4, 3/4 */
     oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 4);      /* 16 */
     oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 2);      /* 32 */
     oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, (3 * OLED_HEIGHT) / 4); /* 48 */
-    /* 5 vertical lines: divide width into 6 bands → x at 1/6 .. 5/6 */
+    /* 5 vertical lines: divide width into 6 bands -> x at 1/6 .. 5/6 */
     oled_draw_dashed_vline(u8g2, OLED_WIDTH / 6,                  GRID_TOP_Y, GRID_BOTTOM_Y);
     oled_draw_dashed_vline(u8g2, (2 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
     oled_draw_dashed_vline(u8g2, (3 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
@@ -199,13 +218,7 @@ static void oled_draw_waveform(const uint8_t y[128]) {
         prev_y = yy;
     }
 
-#ifdef ENABLE_I2C_DMA
-    if (!oled_queue_full_frame_dma()) {
-        // DMA busy or not ready: skip this frame update.
-    }
-#else
-    u8g2_SendBuffer(&g_u8g2);
-#endif
+    oled_flush();
 }
 
 bool oled_init(void) {
@@ -225,7 +238,7 @@ bool oled_init(void) {
 #ifdef ENABLE_I2C_DMA
     // I2C DMA is used only for OLED refresh (TX). u8g2 init remains blocking and is OK at boot.
     i2c_dma_init(&g_oled_i2c_dma, i2c, -1, 1);
-    g_oled_i2c_dma_ready = true;
+    g_oled_i2c_dma_ready = (g_oled_i2c_dma.dma_chan >= 0) && oled_dma_prepare_window_cmds();
 #endif
 
     // Setup u8g2 for SSD1306 I2C 128x64 (full framebuffer)
@@ -273,13 +286,7 @@ void oled_task(void) {
         u8g2_DrawFrame(&g_u8g2, 0, 20, OLED_WIDTH, OLED_HEIGHT - 20);
         int x = (int) (g_frame_counter % (OLED_WIDTH - 6));
         u8g2_DrawBox(&g_u8g2, x, 24, 6, 6);
-#ifdef ENABLE_I2C_DMA
-        if (!oled_queue_full_frame_dma()) {
-            // DMA busy or not ready: skip this frame update.
-        }
-#else
-        u8g2_SendBuffer(&g_u8g2);
-#endif
+        oled_flush();
     }
 }
 

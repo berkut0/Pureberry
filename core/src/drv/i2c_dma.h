@@ -83,6 +83,7 @@ typedef struct i2c_dma {
 
 // dma_chan: pass -1 to claim an unused DMA channel automatically.
 // dma_irq_index: 0 or 1 (recommend 1 to avoid sharing DMA IRQ with audio DMA).
+// If no DMA channel is available, ctx->dma_chan remains -1 and i2c_dma_submit() will fail.
 void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq_index);
 
 // Enqueue a transaction; returns false if the queue is full or txn invalid.

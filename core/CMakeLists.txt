@@ -51,6 +51,9 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_c
 # Optional I2C DMA helper (device drivers may use it to avoid blocking I2C writes)
 if(ENABLE_I2C_DMA)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_I2C_DMA)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/drv/i2c_dma.c
+    )
 endif()
 
 # Core firmware source files
@@ -58,7 +61,6 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/multicore_audio.c
     src/patch_api.c
-    src/drv/i2c_dma.c
     src/dev/adc_pots.c
 )
 

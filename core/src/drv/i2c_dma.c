@@ -64,13 +64,13 @@ static void i2c_dma_clear_i2c_irq_latches(i2c_dma_t *ctx) {
     (void)ctx->hw->clr_stop_det;
     (void)ctx->hw->clr_tx_abrt;
     (void)ctx->hw->clr_intr;
-    (void)ctx->hw->tx_abrt_source; // clear-on-read in some implementations
 }
 
 static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
     // Best-effort abort. DMA may already be idle; this is safe.
     if (ctx->dma_chan >= 0) {
         dma_channel_abort((uint)ctx->dma_chan);
+        dma_irqn_acknowledge_channel(ctx->dma_irq_index, (uint)ctx->dma_chan);
         dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
     }
 
@@ -89,7 +89,9 @@ static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
 }
 
 static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
-    dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
+    if (ctx->dma_chan >= 0) {
+        dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
+    }
     if (ctx->current.done) {
         ctx->current.done(ctx->current.user, result);
     }
@@ -166,7 +168,11 @@ void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq
     }
 
     if (dma_chan < 0) {
-        ctx->dma_chan = (int)dma_claim_unused_channel(true);
+        ctx->dma_chan = (int)dma_claim_unused_channel(false);
+    } else if (dma_chan >= (int)NUM_DMA_CHANNELS) {
+        ctx->dma_chan = -1;
+    } else if (dma_channel_is_claimed((uint)dma_chan)) {
+        ctx->dma_chan = -1;
     } else {
         ctx->dma_chan = dma_chan;
         dma_channel_claim((uint)dma_chan);
@@ -176,7 +182,9 @@ void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq
         g_dma_by_channel[ctx->dma_chan] = ctx;
     }
 
-    i2c_dma_install_irq(ctx->dma_irq_index);
+    if (ctx->dma_chan >= 0) {
+        i2c_dma_install_irq(ctx->dma_irq_index);
+    }
 
     queue_init(&ctx->q, sizeof(i2c_dma_txn_t), (uint)I2C_DMA_QUEUE_LEN);
     ctx->state = I2C_DMA_STATE_IDLE;
@@ -235,7 +243,8 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
 bool i2c_dma_busy(const i2c_dma_t *ctx) {
     if (!ctx) return false;
     if (ctx->state != I2C_DMA_STATE_IDLE) return true;
-    return !queue_is_empty(&((i2c_dma_t *)ctx)->q);
+    queue_t *q = (queue_t *)&ctx->q;
+    return !queue_is_empty(q);
 }
 
 uint32_t i2c_dma_get_last_abort_source(const i2c_dma_t *ctx) {

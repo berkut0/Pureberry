@@ -1,4 +1,4 @@
-# I2C TX via DMA (RP2040/RP2350) — generalized implementation plan
+# I2C TX via DMA (RP2040/RP2350) - generalized implementation plan
 
 Date: 2026-01-31
 
@@ -14,16 +14,16 @@ This note describes a generalized approach (not tied to any specific I2C device 
 
 ## What the SDK already provides
 
-Pico SDK provides the building blocks but **does not** provide a ready-made “i2c_write_dma()”:
+Pico SDK provides the building blocks but **does not** provide a ready-made `i2c_write_dma()`:
 
 - **DMA primitives**: channel claim/configure, DREQ pacing, IRQ on completion (`hardware/dma.h`).
 - **I2C primitives**: init/baud, pins, and blocking helpers (`hardware/i2c.h`).
-- **Hardware register access**: `i2c_inst_t*` → `i2c->hw` for DW_apb_i2c registers.
+- **Hardware register access**: `i2c_inst_t*` -> `i2c->hw` for DW_apb_i2c registers.
 - **DMA request signals (DREQ)**:
   - RP2350: `DREQ_I2C0_TX`, `DREQ_I2C1_TX` exist (paced by I2C TX FIFO availability).
   - RP2040 also has equivalent DREQs (names differ by header set).
 
-Because SDK’s `i2c_write_*` functions are blocking, the DMA solution must drive the I2C controller via registers and implement a small transaction state machine.
+Because SDK's `i2c_write_*` functions are blocking, the DMA solution must drive the I2C controller via registers and implement a small transaction state machine.
 
 ## Key design choice: what DMA writes
 
@@ -43,7 +43,7 @@ This gives deterministic STOP generation without CPU intervention and keeps a si
 - This plan covers **TX**. RX (reads) can be added later (more state and error cases).
 - One physical I2C bus can only service one transfer at a time. The implementation should serialize transfers per `i2c_inst_t`.
 - Callers must not use Pico SDK blocking `i2c_write_*` on the same `i2c_inst_t` concurrently.
-- For multi-core projects: pick a single “I2C owner core” (recommended) and communicate via queues; avoid cross-core register access.
+- For multi-core projects: pick a single "I2C owner core" (recommended) and communicate via queues; avoid cross-core register access.
 
 ## Proposed module layout
 
@@ -54,56 +54,61 @@ Add a small reusable module, e.g.:
 
 Keep device-specific code (OLED, sensors) separate and only depend on `i2c_dma_*` API.
 
-## Public API (minimal but extensible)
+## Public API (current implementation)
 
-Suggested C API:
+In this repository, the API is implemented as a per-bus context + transaction queue:
 
 ```c
 typedef enum {
-  I2C_DMA_OK = 0,
-  I2C_DMA_EBUSY,
-  I2C_DMA_EINVAL,
-  I2C_DMA_EABORT,
-  I2C_DMA_ETIMEOUT,
+  I2C_DMA_RESULT_OK = 0,
+  I2C_DMA_RESULT_EINVAL,
+  I2C_DMA_RESULT_EQUEUE_FULL,
+  I2C_DMA_RESULT_EABORT,
+  I2C_DMA_RESULT_ETIMEOUT,
 } i2c_dma_result_t;
 
+typedef void (*i2c_dma_done_cb_t)(void *user, i2c_dma_result_t result);
+
 typedef struct {
-  i2c_inst_t *i2c;
   uint8_t addr7;
-  const uint16_t *cmds;     // DATA_CMD words
+  const uint32_t *cmds;  // DATA_CMD words (one per I2C byte)
   size_t cmd_count;
-  uint32_t deadline_us;     // optional safety timeout
-  void (*on_done)(void *user, i2c_dma_result_t result);
+  uint32_t timeout_us;   // 0 = no timeout
+  i2c_dma_done_cb_t done;
   void *user;
 } i2c_dma_txn_t;
 
-void i2c_dma_init(i2c_inst_t *i2c, int dma_chan, int dma_irq_index);
-bool i2c_dma_submit(const i2c_dma_txn_t *t);
-void i2c_dma_poll(void); // optional: advances timeouts, calls callbacks if using poll instead of IRQ
-bool i2c_dma_busy(i2c_inst_t *i2c);
+typedef struct i2c_dma i2c_dma_t;
+
+void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq_index);
+bool i2c_dma_submit(i2c_dma_t *ctx, const i2c_dma_txn_t *txn);
+void i2c_dma_poll(i2c_dma_t *ctx); // advances timeouts and invokes callbacks (not from IRQ)
+bool i2c_dma_busy(const i2c_dma_t *ctx);
+uint32_t i2c_dma_get_last_abort_source(const i2c_dma_t *ctx);
+
+size_t i2c_dma_build_write_cmds(
+  uint32_t *out_cmds,
+  size_t out_cap,
+  const uint8_t *bytes,
+  size_t len,
+  bool restart_first,
+  bool stop_last
+);
 ```
 
 Notes:
 
 - `cmds` is generic and lets any device build its own protocol (command prefixes, data streams, etc.) without special-casing.
-- A higher-level helper can be provided to convert raw bytes into `DATA_CMD` words with STOP on the last byte.
+- Callbacks are invoked from `i2c_dma_poll()` (not from the DMA IRQ handler) to keep ISRs minimal.
 
 ## Building `DATA_CMD` command streams
 
-Provide helpers that standardize correctness and reduce copy/paste:
-
-```c
-// Builds a simple write transaction (no RESTART). STOP set on last byte.
-size_t i2c_dma_build_write(uint16_t *out, size_t out_cap, const uint8_t *bytes, size_t n);
-
-// Optionally support sequences: [write] + RESTART + [read] later.
-// For now, keep the API TX-only and allow callers to chain transactions.
-```
+Use `i2c_dma_build_write_cmds()` to convert raw bytes into `DATA_CMD` words.
 
 Implementation details:
 
-- `STOP` bit: set only on last element.
-- `RESTART` bit: set when required (e.g., for combined transactions). For pure writes, typically not needed.
+- `STOP` bit: set only on the last element when `stop_last=true`.
+- `RESTART` bit: set when required (e.g., for combined transactions) via `restart_first=true`.
 
 ## Transaction engine (state machine)
 
@@ -134,11 +139,11 @@ Flow:
    - Check abort:
      - if `tx_abrt_source != 0`, treat as error; clear via `clr_tx_abrt`.
 4. **Timeout**
-   - If deadline exceeded, abort the transaction (disable DMA channel, optionally reset I2C controller) and report `I2C_DMA_ETIMEOUT`.
+   - If deadline exceeded, abort the transaction (disable DMA channel, optionally reset I2C controller) and report `I2C_DMA_RESULT_ETIMEOUT`.
 
 ## Concurrency model: a queue per bus
 
-To make this “general” for many peripherals:
+To make this "general" for many peripherals:
 
 - Maintain a per-bus FIFO queue of `i2c_dma_txn_t` (or pointers).
 - `i2c_dma_submit()` enqueues and starts immediately if the bus is idle.
@@ -147,7 +152,7 @@ To make this “general” for many peripherals:
 This keeps device drivers simple:
 
 - they only construct `cmds[]` and call `submit`,
-- they do not care about bus arbitration or “is it busy”.
+- they do not care about bus arbitration or "is it busy".
 
 ## Memory/lifetime rules
 
@@ -169,8 +174,8 @@ For a generalized solution, start with **caller-owned buffers** plus a few helpe
 
 Handle these consistently:
 
-- `TX_ABRT_SOURCE != 0`: NACK / arbitration / etc. Return `I2C_DMA_EABORT`.
-- Bus stuck (SDA low): provide an optional “bus recover” helper (toggle SCL, issue STOP) that can be called by platform code.
+- `TX_ABRT_SOURCE != 0`: NACK / arbitration / etc. Return `I2C_DMA_RESULT_EABORT`.
+- Bus stuck (SDA low): provide an optional "bus recover" helper (toggle SCL, issue STOP) that can be called by platform code.
 - After repeated errors: reset and re-init the I2C peripheral (last resort).
 
 ## Integration steps (practical checklist)
@@ -183,7 +188,7 @@ Handle these consistently:
    - STOP_DET wait + abort detection
    - timeout safety
 4. Convert one existing I2C user to use the new module (as reference driver).
-5. Add an optional “blocking fallback” mode:
+5. Add an optional "blocking fallback" mode:
    - if DMA channel unavailable, call regular `i2c_write_timeout_us`.
    - useful for early bring-up.
 6. Document the device-driver pattern:
@@ -202,4 +207,4 @@ Handle these consistently:
 
 - RX support (DMA from `data_cmd`/RX FIFO) with proper RESTART + read command words.
 - Scatter/gather: multiple buffers (prefix + payload) without building a contiguous `cmds` array.
-- Priority queue: allow “time-critical” I2C transactions to jump ahead (still serialized).
+- Priority queue: allow "time-critical" I2C transactions to jump ahead (still serialized).
