@@ -9,6 +9,12 @@
  * USB MIDI is a build-time option: pass -D ENABLE_USB_MIDI=ON to the build script.
  * Do not #define ENABLE_USB_MIDI here (CMake defines it when the option is ON).
  * Optional in config_local.h: #define USB_MIDI_DEVICE_NAME "MyDevice"
+ *
+ * USB Audio (host -> device, for adc~) is also a build-time option:
+ *   -D ENABLE_USB_AUDIO=ON
+ * Optional in config_local.h:
+ *   - #define USB_AUDIO_RING_FRAMES 2048
+ *   - #define USB_AUDIO_TARGET_FILL_FRAMES 512
  */
 
 #ifndef CONFIG_LOCAL_H

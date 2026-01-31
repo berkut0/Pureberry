@@ -44,17 +44,29 @@
 #include "multicore_display.h"
 #endif
 
-// Optional USB MIDI support
-#ifdef ENABLE_USB_MIDI
+// Optional USB support (custom TinyUSB stack)
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
 #include "tusb.h"
 #include "usb/usb_cdc.h"
+#endif
+
+#ifdef ENABLE_USB_MIDI
 #include "usb/usb_midi.h"
+#endif
+
+#ifdef ENABLE_USB_AUDIO
+#include "usb/usb_audio.h"
 #endif
 
 // Audio configuration
 #define SAMPLE_RATE 48000
 #define AUDIO_BLOCK_SIZE 64  // Heavy default block size
 #define AUDIO_BUFFER_SIZE (AUDIO_BLOCK_SIZE * 2)  // Stereo
+
+// Producer buffers (core1 -> pico-audio) must be deep enough to keep the I2S DMA consumer fed.
+// With pico-extras audio_i2s default consumer buffer length 256 frames, at least 4x 64-frame
+// producer buffers are needed to avoid partial consumer buffers and excessive DMA IRQ rate.
+#define AUDIO_PRODUCER_BUFFER_COUNT 8
 
 // I2S pin configuration (config.h / config_local.h)
 // DIN = PICO_AUDIO_I2S_DATA_PIN; clocks = PICO_AUDIO_I2S_CLOCK_PIN_BASE, base+1 (order by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED).
@@ -120,9 +132,30 @@ static void float_to_int16(const float *in, int16_t *out, size_t count) {
  */
 static void audio_core_main(void) {
     static float audio_out_buffer[AUDIO_BUFFER_SIZE];
+    static float audio_in_buffer[AUDIO_BUFFER_SIZE];
+#ifdef ENABLE_USB_AUDIO
+    static int16_t usb_in_i16[AUDIO_BUFFER_SIZE];
+    enum { USB_AUDIO_RS_FIFO_FRAMES = 256 };
+    static int16_t usb_rs_fifo[USB_AUDIO_RS_FIFO_FRAMES * 2];
+    static size_t usb_rs_fifo_len_frames;
+    static size_t usb_rs_fifo_rd_frames;
+    static float usb_rs_phase;
+    static uint32_t usb_rs_rate;
+    static bool usb_in_primed;
+#endif
+    static int hv_in_ch = -1;
+    static int hv_out_ch = -1;
     while (true) {
         if (audio_pool == NULL || heavy_context == NULL) {
             continue;
+        }
+        if (hv_in_ch < 0 || hv_out_ch < 0) {
+            hv_in_ch = hv_getNumInputChannels(heavy_context);
+            hv_out_ch = hv_getNumOutputChannels(heavy_context);
+            if (hv_in_ch < 0) hv_in_ch = 0;
+            if (hv_out_ch < 0) hv_out_ch = 0;
+            if (hv_in_ch > 2) hv_in_ch = 2;
+            if (hv_out_ch > 2) hv_out_ch = 2;
         }
         multicore_drain_ctrl(heavy_context);
         audio_buffer_t *buffer = take_audio_buffer(audio_pool, true);
@@ -137,14 +170,178 @@ static void audio_core_main(void) {
             if (block == blocks_to_process - 1) {
                 block_size = samples_per_channel - (block * AUDIO_BLOCK_SIZE);
             }
-            hv_processInlineInterleaved(heavy_context, NULL, audio_out_buffer, block_size);
+
+            float *hv_in_ptr = NULL;
+#ifdef ENABLE_USB_AUDIO
+            if (hv_in_ch > 0) {
+                uint32_t usb_sr = usb_audio_get_sample_rate();
+                if (usb_sr == 0) usb_sr = SAMPLE_RATE;
+
+                if (usb_sr != usb_rs_rate) {
+                    usb_rs_rate = usb_sr;
+                    usb_rs_fifo_len_frames = 0;
+                    usb_rs_fifo_rd_frames = 0;
+                    usb_rs_phase = 0.0f;
+                    usb_in_primed = false;
+                }
+
+                // Prefill the inter-core ring buffer before consuming samples. This avoids
+                // continuous underruns (and audible crackle) when the host delivers isoch
+                // packets with jitter and core1 immediately starts draining at 48 kHz.
+                //
+                // While unprimed we feed silence to Heavy and let core0 fill the ring up
+                // to USB_AUDIO_TARGET_FILL_FRAMES.
+                if (!usb_audio_is_streaming()) {
+                    usb_in_primed = false;
+                }
+
+                uint32_t ring_fill = usb_audio_get_ring_fill_frames();
+                if (!usb_in_primed) {
+                    if (ring_fill >= (uint32_t)USB_AUDIO_TARGET_FILL_FRAMES) {
+                        usb_in_primed = true;
+                    } else {
+                        memset(audio_in_buffer, 0, sizeof(audio_in_buffer));
+                        hv_in_ptr = audio_in_buffer;
+                        // Skip popping from the ring so it can fill.
+                        goto hv_process_block;
+                    }
+                }
+
+                if (usb_sr == SAMPLE_RATE) {
+                    size_t got_frames = usb_audio_pop_i16(usb_in_i16, block_size);
+                    if (got_frames < block_size) {
+                        memset(
+                            usb_in_i16 + (got_frames * 2),
+                            0,
+                            (block_size - got_frames) * 2 * sizeof(int16_t)
+                        );
+                    }
+
+                    // Convert USB stereo int16 to float
+                    int16_to_float(usb_in_i16, audio_in_buffer, block_size * 2);
+                } else {
+                    // Linear resampler for non-48k input rates (e.g., 44.1k -> 48k).
+                    const float step = (float)usb_sr / (float)SAMPLE_RATE;
+                    const float inv_s16 = 1.0f / 32768.0f;
+
+                    if (usb_rs_fifo_rd_frames >= (USB_AUDIO_RS_FIFO_FRAMES / 2)) {
+                        size_t remaining = usb_rs_fifo_len_frames - usb_rs_fifo_rd_frames;
+                        memmove(
+                            usb_rs_fifo,
+                            usb_rs_fifo + (usb_rs_fifo_rd_frames * 2),
+                            remaining * 2 * sizeof(int16_t)
+                        );
+                        usb_rs_fifo_len_frames = remaining;
+                        usb_rs_fifo_rd_frames = 0;
+                    }
+
+                    float max_pos = usb_rs_phase + (float)(block_size - 1) * step;
+                    size_t needed_frames = (size_t)max_pos + 2; // floor(max_pos) + 2
+                    size_t available_frames =
+                        (usb_rs_fifo_len_frames >= usb_rs_fifo_rd_frames)
+                            ? (usb_rs_fifo_len_frames - usb_rs_fifo_rd_frames)
+                            : 0;
+                    if (available_frames < needed_frames) {
+                        size_t to_fetch = needed_frames - available_frames;
+                        size_t space = USB_AUDIO_RS_FIFO_FRAMES - usb_rs_fifo_len_frames;
+                        if (to_fetch > space) to_fetch = space;
+                        if (to_fetch > 0) {
+                            size_t got = usb_audio_pop_i16(
+                                usb_rs_fifo + (usb_rs_fifo_len_frames * 2),
+                                to_fetch
+                            );
+                            usb_rs_fifo_len_frames += got;
+                        }
+                    }
+
+                    for (size_t i = 0; i < block_size; i++) {
+                        size_t idx = usb_rs_fifo_rd_frames;
+                        size_t avail =
+                            (usb_rs_fifo_len_frames >= idx)
+                                ? (usb_rs_fifo_len_frames - idx)
+                                : 0;
+                        if (avail >= 2) {
+                            int16_t l0 = usb_rs_fifo[(idx * 2) + 0];
+                            int16_t r0 = usb_rs_fifo[(idx * 2) + 1];
+                            int16_t l1 = usb_rs_fifo[((idx + 1) * 2) + 0];
+                            int16_t r1 = usb_rs_fifo[((idx + 1) * 2) + 1];
+                            float frac = usb_rs_phase;
+                            float l = ((float)l0 + (frac * ((float)l1 - (float)l0))) * inv_s16;
+                            float r = ((float)r0 + (frac * ((float)r1 - (float)r0))) * inv_s16;
+                            audio_in_buffer[(i * 2) + 0] = l;
+                            audio_in_buffer[(i * 2) + 1] = r;
+                        } else {
+                            audio_in_buffer[(i * 2) + 0] = 0.0f;
+                            audio_in_buffer[(i * 2) + 1] = 0.0f;
+                        }
+
+                        usb_rs_phase += step;
+                        while (usb_rs_phase >= 1.0f) {
+                            usb_rs_phase -= 1.0f;
+                            if (usb_rs_fifo_rd_frames + 1 < usb_rs_fifo_len_frames) {
+                                usb_rs_fifo_rd_frames++;
+                            } else {
+                                usb_rs_fifo_rd_frames = usb_rs_fifo_len_frames;
+                                usb_rs_phase = 0.0f;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Match Heavy's expected input channel count (0/1/2).
+                if (hv_in_ch == 1) {
+                    for (size_t i = 0; i < block_size; i++) {
+                        float l = audio_in_buffer[i * 2 + 0];
+                        float r = audio_in_buffer[i * 2 + 1];
+                        audio_in_buffer[i] = 0.5f * (l + r);
+                    }
+                }
+                hv_in_ptr = audio_in_buffer;
+            }
+#endif
+
+hv_process_block:
+            if (hv_in_ptr == NULL && hv_in_ch > 0) {
+                // When a patch uses adc~ but no audio input source is configured,
+                // feed silence instead of leaving the pointer NULL.
+                memset(audio_in_buffer, 0, block_size * (size_t)hv_in_ch * sizeof(float));
+                hv_in_ptr = audio_in_buffer;
+            }
+            hv_processInlineInterleaved(heavy_context, hv_in_ptr, audio_out_buffer, block_size);
 #ifdef ENABLE_OLED
             // Publish a downsampled waveform for the OLED (core1 only; no I/O).
+#ifdef ENABLE_USB_AUDIO
+            if (!usb_audio_is_streaming()) {
+                multicore_display_capture_interleaved(audio_out_buffer, block_size);
+            }
+#else
             multicore_display_capture_interleaved(audio_out_buffer, block_size);
 #endif
-            float_to_int16(audio_out_buffer,
-                           samples + (block * AUDIO_BLOCK_SIZE * 2),
-                           block_size * 2);
+#endif
+
+            if (hv_out_ch <= 0) {
+                memset(
+                    samples + (block * AUDIO_BLOCK_SIZE * 2),
+                    0,
+                    block_size * 2 * sizeof(int16_t)
+                );
+            } else if (hv_out_ch == 1) {
+                for (size_t i = 0; i < block_size; i++) {
+                    float sample = audio_out_buffer[i];
+                    if (sample > 1.0f) sample = 1.0f;
+                    if (sample < -1.0f) sample = -1.0f;
+                    int16_t s16 = (int16_t)(sample * 32767.0f);
+                    samples[(block * AUDIO_BLOCK_SIZE * 2) + (i * 2) + 0] = s16;
+                    samples[(block * AUDIO_BLOCK_SIZE * 2) + (i * 2) + 1] = s16;
+                }
+            } else {
+                float_to_int16(
+                    audio_out_buffer,
+                    samples + (block * AUDIO_BLOCK_SIZE * 2),
+                    block_size * 2
+                );
+            }
         }
         buffer->sample_count = samples_per_channel;
         give_audio_buffer(audio_pool, buffer);
@@ -152,8 +349,8 @@ static void audio_core_main(void) {
 }
 
 int main() {
-#ifdef ENABLE_USB_MIDI
-    // Custom TinyUSB initialization for CDC+MIDI
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
+    // Custom TinyUSB initialization for composite device (CDC + optional MIDI + optional Audio)
     tusb_init();
     
     // Service USB immediately after init for enumeration
@@ -167,8 +364,21 @@ int main() {
     usb_cdc_init();
     
     printf("\n=== RP2350 Pure Data Firmware ===\n");
-    printf("USB MIDI Mode: CDC+MIDI composite device\n");
+#ifdef ENABLE_USB_MIDI
+    printf("USB MIDI enabled\n");
+#else
+    printf("USB MIDI disabled\n");
+#endif
+#ifdef ENABLE_USB_AUDIO
+    printf("USB Audio enabled (UAC2 speaker -> adc~)\n");
+#else
+    printf("USB Audio disabled\n");
+#endif
     printf("Initializing...\n");
+
+#ifdef ENABLE_USB_AUDIO
+    usb_audio_init();
+#endif
 #else
     // Standard stdio initialization (pico_stdio_usb)
     stdio_init_all();
@@ -195,12 +405,13 @@ int main() {
     
     // Create audio buffer pool for output (only if I2S setup succeeded)
     if (output_format != NULL) {
-        audio_pool = audio_new_producer_pool(&audio_buffer_format, 3, AUDIO_BLOCK_SIZE);
+        audio_pool = audio_new_producer_pool(&audio_buffer_format, AUDIO_PRODUCER_BUFFER_COUNT, AUDIO_BLOCK_SIZE);
         if (audio_pool == NULL) {
             printf("ERROR: Failed to create audio buffer pool\n");
         } else {
             // Connect audio producer to I2S output
-            if (!audio_i2s_connect(audio_pool)) {
+            // Use buffer-on-give to keep the DMA IRQ handler short and deterministic.
+            if (!audio_i2s_connect_extra(audio_pool, true, 2, 256, NULL)) {
                 printf("ERROR: Failed to connect audio to I2S\n");
             } else {
                 // Enable I2S audio output
@@ -261,13 +472,21 @@ int main() {
     printf("Entering main loop (core0)...\n");
 
     while (true) {
-#ifdef ENABLE_USB_MIDI
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
         tud_task();
+#endif
+#ifdef ENABLE_USB_MIDI
         usb_midi_task();
+#endif
+#ifdef ENABLE_USB_AUDIO
+        usb_audio_task();
 #endif
         multicore_drain_led();
 #ifdef ENABLE_OLED
         oled_task();
+#endif
+#ifdef ENABLE_USB_AUDIO
+        // USB-Audio diagnostics are shown on OLED to avoid blocking CDC printf.
 #endif
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
         if (POTS_COUNT > 0) {
@@ -287,7 +506,12 @@ int main() {
             }
         }
 #endif
+#ifdef ENABLE_USB_AUDIO
+        // With isoch USB audio, prioritize servicing tud_task()/usb_audio_task() frequently.
+        tight_loop_contents();
+#else
         sleep_us(100);
+#endif
     }
     
     // Cleanup (unreachable in current implementation)

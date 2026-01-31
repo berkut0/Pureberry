@@ -36,6 +36,7 @@ set(CMAKE_CXX_STANDARD 17)
 # Optional features
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
+option(ENABLE_USB_AUDIO "Enable USB Audio device mode (UAC2 speaker input)" OFF)
 option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
 
 # Add executable
@@ -52,6 +53,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/multicore_audio.c
     src/patch_api.c
+    src/crash.c
     src/dev/adc_pots.c
 )
 
@@ -162,20 +164,25 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/dev
 )
 
-# USB configuration: either pico_stdio_usb (default) or custom TinyUSB (MIDI enabled)
-if(ENABLE_USB_MIDI)
-    # Custom TinyUSB for CDC+MIDI composite device
+# USB configuration: either pico_stdio_usb (default) or custom TinyUSB (MIDI and/or Audio)
+if(ENABLE_USB_MIDI OR ENABLE_USB_AUDIO)
+    # Custom TinyUSB for composite USB device (CDC + optional MIDI + optional Audio)
     
     # Enable TinyUSB device library (this sets up all the necessary flags)
     set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
     
     # Define that we're using TinyUSB device mode
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE 
-        ENABLE_USB_MIDI
         LIB_TINYUSB_DEVICE=1
-        CFG_TUSB_MCU=OPT_MCU_RP2040
-        CFG_TUSB_OS=OPT_OS_NONE
     )
+
+    if(ENABLE_USB_MIDI)
+        target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_MIDI)
+    endif()
+
+    if(ENABLE_USB_AUDIO)
+        target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_AUDIO)
+    endif()
     
     # Include tusb_config.h from src directory
     target_include_directories(${PROJECT_NAME}.elf PUBLIC 
@@ -192,14 +199,31 @@ if(ENABLE_USB_MIDI)
     target_sources(${PROJECT_NAME}.elf PRIVATE
         src/usb/usb_descriptors.c
         src/usb/usb_cdc.c
-        src/usb/usb_midi.c
     )
+
+    if(ENABLE_USB_MIDI)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+            src/usb/usb_midi.c
+        )
+    endif()
+
+    if(ENABLE_USB_AUDIO)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+            src/usb/usb_audio.c
+        )
+    endif()
     
-    message(STATUS "USB MIDI enabled: Using custom TinyUSB (CDC+MIDI)")
+    if(ENABLE_USB_MIDI AND ENABLE_USB_AUDIO)
+        message(STATUS "USB enabled: Using custom TinyUSB (CDC+MIDI+Audio)")
+    elseif(ENABLE_USB_MIDI)
+        message(STATUS "USB enabled: Using custom TinyUSB (CDC+MIDI)")
+    elseif(ENABLE_USB_AUDIO)
+        message(STATUS "USB enabled: Using custom TinyUSB (CDC+Audio)")
+    endif()
 else()
     # Default: use pico_stdio_usb (CDC only, simpler)
     pico_enable_stdio_usb(${PROJECT_NAME}.elf 1)
-    message(STATUS "USB MIDI disabled: Using pico_stdio_usb (CDC only)")
+    message(STATUS "USB custom stack disabled: Using pico_stdio_usb (CDC only)")
 endif()
 
 # Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t; hardware_adc for pots)

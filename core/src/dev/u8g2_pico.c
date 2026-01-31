@@ -7,6 +7,14 @@
 #include "hardware/i2c.h"
 #include "config.h"
 
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
+#include "tusb.h"
+#endif
+
+#ifdef ENABLE_USB_AUDIO
+#include "usb/usb_audio.h"
+#endif
+
 static inline i2c_inst_t *get_i2c_from_u8x8(u8x8_t *u8x8) {
     return (i2c_inst_t *) u8x8_GetUserPtr(u8x8);
 }
@@ -28,7 +36,20 @@ static uint8_t flush_i2c(u8x8_t *u8x8, bool keep_going) {
     uint8_t addr8 = u8x8_GetI2CAddress(u8x8);
     uint8_t addr7 = (uint8_t) (addr8 >> 1);
 
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
+    // Avoid long stretches without servicing TinyUSB while pushing the OLED framebuffer.
+    tud_task();
+#ifdef ENABLE_USB_AUDIO
+    usb_audio_task();
+#endif
+#endif
     int written = i2c_write_timeout_us(i2c, addr7, g_txbuf, (int) g_txlen, keep_going, OLED_I2C_TIMEOUT_US);
+#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
+    tud_task();
+#ifdef ENABLE_USB_AUDIO
+    usb_audio_task();
+#endif
+#endif
     g_txlen = 0;
     return (written > 0) ? 1 : 0;
 }

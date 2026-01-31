@@ -28,6 +28,22 @@
 
 #endif
 
+// USB Audio (UAC2 speaker / host -> device)
+// Ring buffer between core0 (USB) and core1 (audio DSP).
+#ifndef USB_AUDIO_RING_FRAMES
+#define USB_AUDIO_RING_FRAMES 2048
+#endif
+
+#ifndef USB_AUDIO_TARGET_FILL_FRAMES
+#ifdef ENABLE_OLED
+// With OLED enabled, core0 can be intermittently busy (I2C transfers, rendering).
+// A deeper inter-core target buffer helps avoid audible underruns.
+#define USB_AUDIO_TARGET_FILL_FRAMES 1024
+#else
+#define USB_AUDIO_TARGET_FILL_FRAMES 512
+#endif
+#endif
+
 // I2S (pico-extras / PICO_AUDIO_I2S_*)
 // Clock pins are consecutive; order is controlled by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED.
 // Defaults free GPIO 26-29 for ADC potentiometers.
@@ -89,7 +105,25 @@
 // - Refresh rate: set OLED_REFRESH_FPS; frame period and waveform decimation are derived.
 
 #ifndef OLED_REFRESH_FPS
+// OLED refresh rate:
+// - USB Audio can generate frequent USB events (control probes + isoch transfers).
+// - The SSD1306 full-framebuffer I2C transfer can block core0 for multiple milliseconds.
+// Lowering the refresh rate reduces worst-case USB service jitter.
+#ifdef ENABLE_USB_AUDIO
+#define OLED_REFRESH_FPS 20
+#else
 #define OLED_REFRESH_FPS 60
+#endif
+#endif
+
+// While USB audio is actively streaming, OLED refresh can still introduce periodic load spikes
+// (notably every 1000/OLED_REFRESH_FPS ms). Use a much lower rate while streaming to keep audio stable.
+#ifndef OLED_REFRESH_FPS_STREAMING
+#ifdef ENABLE_USB_AUDIO
+#define OLED_REFRESH_FPS_STREAMING 2
+#else
+#define OLED_REFRESH_FPS_STREAMING OLED_REFRESH_FPS
+#endif
 #endif
 
 #ifndef OLED_I2C_INSTANCE
@@ -115,6 +149,19 @@
 #ifndef OLED_I2C_TIMEOUT_US
 // Timeout for a whole I2C transaction. Used to prevent a stuck bus from hanging core0.
 #define OLED_I2C_TIMEOUT_US 5000
+#endif
+
+// While USB audio is streaming, OLED updates must not block core0 for long. The firmware
+// sends OLED data in small I2C chunks and services USB between them. Smaller values reduce
+// worst-case USB jitter at the cost of more I2C transactions.
+#ifndef OLED_I2C_STREAM_CHUNK_BYTES
+#define OLED_I2C_STREAM_CHUNK_BYTES 32
+#endif
+
+// How many SSD1306 pages (8px rows) are updated during USB-audio streaming.
+// Each page is OLED_WIDTH bytes on the I2C bus (e.g., 128 bytes).
+#ifndef OLED_STREAMING_PAGES
+#define OLED_STREAMING_PAGES 4
 #endif
 
 #ifndef OLED_WIDTH
