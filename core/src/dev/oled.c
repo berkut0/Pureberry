@@ -5,15 +5,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "pico/stdlib.h"
-#include "pico/time.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
+#include "pico/stdlib.h"
+#include "pico/time.h"
 
 #include "config.h"
+#include "crash.h"
 #include "dev/u8g2_pico.h"
 #include "multicore_display.h"
-#include "crash.h"
 
 #if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
 #include "tusb.h"
@@ -21,6 +21,11 @@
 
 #ifdef ENABLE_USB_AUDIO
 #include "usb/usb_audio.h"
+#endif
+
+#ifdef ENABLE_I2C_DMA
+#include "drv/i2c_dma.h"
+#include "hardware/regs/i2c.h"
 #endif
 
 static u8g2_t g_u8g2;
@@ -32,6 +37,15 @@ static uint32_t g_frame_counter;
 static bool g_show_crash_screen;
 static absolute_time_t g_crash_screen_until;
 static crash_info_t g_crash_info;
+
+#ifdef ENABLE_I2C_DMA
+static i2c_dma_t g_oled_i2c_dma;
+static bool g_oled_i2c_dma_ready;
+
+enum { OLED_FB_LEN = OLED_WIDTH * (OLED_HEIGHT / 8) };
+static uint32_t g_oled_cmd_window[7];
+static uint32_t g_oled_cmd_data[1 + OLED_FB_LEN];
+#endif
 
 static i2c_inst_t *oled_get_i2c(void) {
 #if OLED_I2C_INSTANCE == 0
@@ -195,47 +209,86 @@ static void oled_send_buffer_pages_diff(uint8_t first_page, uint8_t page_count) 
     prev_valid = true;
 }
 
-/* Dashed line pattern: segment length and gap in pixels. */
-#define DASH_SEGMENT_LEN  4
-#define DASH_GAP_LEN     4
+#ifdef ENABLE_I2C_DMA
+static bool oled_dma_queue_pages(uint8_t first_page, uint8_t page_count) {
+    if (!g_oled_i2c_dma_ready) return false;
+    if (page_count == 0) return false;
+    if (first_page >= 8) return false;
+    if ((uint8_t)(first_page + page_count) > 8) page_count = (uint8_t)(8 - first_page);
+    if (i2c_dma_busy(&g_oled_i2c_dma)) return false;
 
-static void oled_draw_dashed_hline(u8g2_t *u8g2, uint8_t x0, uint8_t x1, uint8_t y) {
-    unsigned int x = x0;
-    while (x <= x1) {
-        unsigned int seg_end = x + DASH_SEGMENT_LEN;
-        if (seg_end > x1) seg_end = x1 + 1;
-        u8g2_DrawHLine(u8g2, (uint8_t)x, y, (uint8_t)(seg_end - x));
-        x = seg_end + DASH_GAP_LEN;
+    uint8_t last_page = (uint8_t)(first_page + page_count - 1);
+    uint8_t const window_bytes[7] = {
+        0x00,                                       // control byte: command stream
+        0x21, 0x00, (uint8_t)(OLED_WIDTH - 1),       // column address
+        0x22, first_page, last_page                  // page address
+    };
+    if (i2c_dma_build_write_cmds(
+            g_oled_cmd_window,
+            sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+            window_bytes,
+            sizeof(window_bytes),
+            false,
+            true) == 0) {
+        return false;
     }
+
+    uint8_t const *fb = u8g2_GetBufferPtr(&g_u8g2);
+    if (!fb) return false;
+    size_t const offset = (size_t)first_page * (size_t)OLED_WIDTH;
+    size_t const len_bytes = (size_t)page_count * (size_t)OLED_WIDTH;
+    if (offset + len_bytes > (size_t)OLED_FB_LEN) return false;
+
+    g_oled_cmd_data[0] = 0x40u; // control byte: data stream
+    for (size_t i = 0; i < len_bytes; i++) {
+        uint32_t v = (uint32_t)fb[offset + i] & 0xFFu;
+        if (i == (len_bytes - 1)) {
+            v |= I2C_IC_DATA_CMD_STOP_BITS;
+        }
+        g_oled_cmd_data[1 + i] = v;
+    }
+
+    i2c_dma_txn_t t1 = {
+        .addr7 = (uint8_t)OLED_I2C_ADDR,
+        .cmds = g_oled_cmd_window,
+        .cmd_count = sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+        .timeout_us = 20000u,
+        .done = NULL,
+        .user = NULL,
+    };
+    i2c_dma_txn_t t2 = {
+        .addr7 = (uint8_t)OLED_I2C_ADDR,
+        .cmds = g_oled_cmd_data,
+        .cmd_count = 1u + len_bytes,
+        .timeout_us = (uint32_t)(20000u + (len_bytes * 50u)),
+        .done = NULL,
+        .user = NULL,
+    };
+
+    if (!i2c_dma_submit(&g_oled_i2c_dma, &t1)) return false;
+    if (!i2c_dma_submit(&g_oled_i2c_dma, &t2)) return false;
+    return true;
+}
+#endif
+
+static void oled_flush_full(void) {
+#ifdef ENABLE_I2C_DMA
+    if (g_oled_i2c_dma_ready) {
+        (void)oled_dma_queue_pages(0, 8);
+        return;
+    }
+#endif
+    u8g2_SendBuffer(&g_u8g2);
 }
 
-static void oled_draw_dashed_vline(u8g2_t *u8g2, uint8_t x, uint8_t y0, uint8_t y1) {
-    unsigned int y = y0;
-    while (y <= y1) {
-        unsigned int seg_end = y + DASH_SEGMENT_LEN;
-        if (seg_end > y1) seg_end = y1 + 1;
-        u8g2_DrawVLine(u8g2, x, (uint8_t)y, (uint8_t)(seg_end - y));
-        y = seg_end + DASH_GAP_LEN;
+static void oled_flush_streaming(void) {
+#ifdef ENABLE_I2C_DMA
+    if (g_oled_i2c_dma_ready) {
+        (void)oled_dma_queue_pages(0, (uint8_t)OLED_STREAMING_PAGES);
+        return;
     }
-}
-
-/* Grid: 3 horizontal and 5 vertical dashed lines over the waveform area. */
-#define GRID_TOP_Y    0
-#define GRID_BOTTOM_Y (OLED_HEIGHT - 1)
-#define GRID_LEFT_X   0
-#define GRID_RIGHT_X  (OLED_WIDTH - 1)
-
-static void oled_draw_grid(u8g2_t *u8g2) {
-    /* 3 horizontal lines: divide height into 4 bands → y at 1/4, 2/4, 3/4 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 4);      /* 16 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 2);      /* 32 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, (3 * OLED_HEIGHT) / 4); /* 48 */
-    /* 5 vertical lines: divide width into 6 bands → x at 1/6 .. 5/6 */
-    oled_draw_dashed_vline(u8g2, OLED_WIDTH / 6,                  GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (2 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (3 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (4 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (5 * OLED_WIDTH) / 6,            GRID_TOP_Y, GRID_BOTTOM_Y);
+#endif
+    oled_send_buffer_pages_diff(0, (uint8_t)OLED_STREAMING_PAGES);
 }
 
 static void oled_draw_boot(void) {
@@ -307,7 +360,7 @@ static void oled_draw_waveform(const uint8_t y[128]) {
     u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
 
     char line[32];
-    snprintf(line, sizeof(line), "frame %lu", (unsigned long) g_frame_counter);
+    snprintf(line, sizeof(line), "frame %lu", (unsigned long)g_frame_counter);
     u8g2_DrawStr(&g_u8g2, 0, 10, line);
 
 #ifdef ENABLE_USB_AUDIO
@@ -352,9 +405,6 @@ static void oled_draw_waveform(const uint8_t y[128]) {
     }
 #endif
 
-    // The grid makes debugging USB text harder (and doesn't help when hunting control-request issues).
-    // Keep it disabled for now.
-
     uint8_t prev_y = y[0];
     for (int x = 0; x < 128; x++) {
         uint8_t yy = y[x];
@@ -366,7 +416,7 @@ static void oled_draw_waveform(const uint8_t y[128]) {
         prev_y = yy;
     }
 
-    u8g2_SendBuffer(&g_u8g2);
+    oled_flush_full();
 }
 
 static void oled_draw_streaming_status(void) {
@@ -374,7 +424,7 @@ static void oled_draw_streaming_status(void) {
     u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
 
     char line[32];
-    snprintf(line, sizeof(line), "frame %lu", (unsigned long) g_frame_counter);
+    snprintf(line, sizeof(line), "frame %lu", (unsigned long)g_frame_counter);
     u8g2_DrawStr(&g_u8g2, 0, 10, line);
 
 #ifdef ENABLE_USB_AUDIO
@@ -406,8 +456,7 @@ static void oled_draw_streaming_status(void) {
 #endif
 
     // Update only the top part of the display while USB audio is streaming.
-    // Full-frame I2C transfers can introduce periodic scheduling jitter.
-    oled_send_buffer_pages_diff(0, (uint8_t)OLED_STREAMING_PAGES);
+    oled_flush_streaming();
 }
 
 bool oled_init(void) {
@@ -424,10 +473,16 @@ bool oled_init(void) {
 
     i2c_init(i2c, OLED_I2C_BAUD);
 
+#ifdef ENABLE_I2C_DMA
+    // I2C DMA is used only for OLED refresh (TX). u8g2 init remains blocking and is OK at boot.
+    i2c_dma_init(&g_oled_i2c_dma, i2c, -1, 1);
+    g_oled_i2c_dma_ready = (g_oled_i2c_dma.dma_chan >= 0);
+#endif
+
     // Setup u8g2 for SSD1306 I2C 128x64 (full framebuffer)
     u8g2_Setup_ssd1306_i2c_128x64_noname_f(&g_u8g2, U8G2_R0, u8x8_byte_pico_hw_i2c, u8x8_gpio_and_delay_pico);
     u8x8_SetUserPtr(u8g2_GetU8x8(&g_u8g2), i2c);
-    u8x8_SetI2CAddress(u8g2_GetU8x8(&g_u8g2), (uint8_t) (OLED_I2C_ADDR << 1));
+    u8x8_SetI2CAddress(u8g2_GetU8x8(&g_u8g2), (uint8_t)(OLED_I2C_ADDR << 1));
 
     // u8g2 init will perform I2C transactions; our backend uses timeouts to avoid hangs.
     u8g2_InitDisplay(&g_u8g2);
@@ -455,6 +510,14 @@ bool oled_init(void) {
 
 void oled_task(void) {
     if (!g_oled_ready) return;
+
+    oled_usb_service();
+
+#ifdef ENABLE_I2C_DMA
+    if (g_oled_i2c_dma_ready) {
+        i2c_dma_poll(&g_oled_i2c_dma);
+    }
+#endif
 
     absolute_time_t now = get_absolute_time();
     if (g_show_crash_screen) {
@@ -487,14 +550,13 @@ void oled_task(void) {
     if (multicore_display_read_latest(y)) {
         oled_draw_waveform(y);
     } else {
-        // No waveform yet: keep showing a small animation.
         u8g2_ClearBuffer(&g_u8g2);
         u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
         u8g2_DrawStr(&g_u8g2, 0, 12, "Waiting waveform...");
         u8g2_DrawFrame(&g_u8g2, 0, 20, OLED_WIDTH, OLED_HEIGHT - 20);
-        int x = (int) (g_frame_counter % (OLED_WIDTH - 6));
+        int x = (int)(g_frame_counter % (OLED_WIDTH - 6));
         u8g2_DrawBox(&g_u8g2, x, 24, 6, 6);
-        u8g2_SendBuffer(&g_u8g2);
+        oled_flush_full();
     }
 }
 
@@ -504,3 +566,4 @@ bool oled_init(void) { return false; }
 void oled_task(void) { (void)0; }
 
 #endif // ENABLE_OLED
+
