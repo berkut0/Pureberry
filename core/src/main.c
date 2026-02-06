@@ -44,6 +44,11 @@
 #include "multicore_display.h"
 #endif
 
+// Optional MPR121 capacitive touch (I2C, touch1..touch12 @hv_param)
+#ifdef ENABLE_MPR121
+#include "dev/mpr121_touch.h"
+#endif
+
 // Optional USB MIDI support
 #ifdef ENABLE_USB_MIDI
 #include "tusb.h"
@@ -244,6 +249,14 @@ int main() {
     }
 #endif
 
+#ifdef ENABLE_MPR121
+    if (mpr121_touch_init()) {
+        printf("MPR121 touch initialized (IRQ GPIO%d, addr 0x%02X)\n", MPR121_IRQ_PIN, MPR121_I2C_ADDR);
+    } else {
+        printf("WARNING: MPR121 touch initialization failed\n");
+    }
+#endif
+
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
     if (POTS_COUNT > 0) {
         if (adc_pots_init()) {
@@ -266,6 +279,9 @@ int main() {
         usb_midi_task();
 #endif
         multicore_drain_led();
+#ifdef ENABLE_MPR121
+        mpr121_touch_task();
+#endif
 #ifdef ENABLE_OLED
         oled_task();
 #endif

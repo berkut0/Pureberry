@@ -14,3 +14,7 @@
 	path = third_party/hvcc
 	url = https://github.com/Wasted-Audio/hvcc.git
 	branch = develop
+[submodule "third_party/pico-mpr121"]
+	path = third_party/pico-mpr121
+	url = https://github.com/antgon/pico-mpr121.git
+

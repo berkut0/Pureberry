@@ -125,4 +125,20 @@
 #define OLED_HEIGHT 64
 #endif
 
+// MPR121 capacitive touch (shares I2C bus with OLED; same instance/pins)
+#ifndef MPR121_IRQ_PIN
+#define MPR121_IRQ_PIN 12
+#endif
+#ifndef MPR121_I2C_ADDR
+#define MPR121_I2C_ADDR 0x5A
+#endif
+#define MPR121_NUM_ELECTRODES 12
+// Touch/release thresholds (0..255). Lower = more sensitive. Override in config_local.h if pads 2,3 etc. don't trigger.
+#ifndef MPR121_TOUCH_THRESHOLD
+#define MPR121_TOUCH_THRESHOLD 16
+#endif
+#ifndef MPR121_RELEASE_THRESHOLD
+#define MPR121_RELEASE_THRESHOLD 10
+#endif
+
 #endif // CONFIG_H

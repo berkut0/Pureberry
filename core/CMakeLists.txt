@@ -11,11 +11,23 @@ endif()
 
 set(LOCAL_PICOTOOL_PATH "${PROJECT_ROOT}/third_party/picotool")
 
-if(NOT DEFINED PICOTOOL_FETCH_FROM_GIT_PATH AND
+# IMPORTANT:
+# Do NOT set PICOTOOL_FETCH_FROM_GIT_PATH to the picotool submodule root.
+# Pico SDK's Findpicotool.cmake uses PICOTOOL_FETCH_FROM_GIT_PATH as an *install/build directory*
+# and will create picotool-src/, picotool-build/, picotool-subbuild/, picotool/ under it.
+# If pointed at the submodule, the submodule becomes permanently "dirty" (untracked build artifacts).
+#
+# Instead, keep using the local submodule as the git source, but put build/install output under repo build/
+# which is already ignored.
+if(NOT DEFINED PICOTOOL_GIT_REPOSITORY_URL AND
    (EXISTS "${LOCAL_PICOTOOL_PATH}/.git" OR EXISTS "${LOCAL_PICOTOOL_PATH}/CMakeLists.txt"))
     file(TO_CMAKE_PATH "${LOCAL_PICOTOOL_PATH}" LOCAL_PICOTOOL_PATH_CMAKE)
-    set(PICOTOOL_FETCH_FROM_GIT_PATH "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE PATH "Local picotool path")
-    message(STATUS "Using local picotool from submodule: ${LOCAL_PICOTOOL_PATH_CMAKE}")
+    set(PICOTOOL_GIT_REPOSITORY_URL "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE STRING "Picotool git repository (local)" FORCE)
+endif()
+
+if(NOT DEFINED PICOTOOL_FETCH_FROM_GIT_PATH)
+    file(TO_CMAKE_PATH "${PROJECT_ROOT}/build/_picotool" PICOTOOL_BUILD_ROOT_CMAKE)
+    set(PICOTOOL_FETCH_FROM_GIT_PATH "${PICOTOOL_BUILD_ROOT_CMAKE}" CACHE PATH "Picotool build/install dir" FORCE)
 endif()
 
 # Include pico_sdk_import.cmake from the project root
@@ -38,6 +50,7 @@ option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
 option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
 option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
+option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" ON)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -109,6 +122,20 @@ if(ENABLE_WS2812)
     pico_generate_pio_header(${PROJECT_NAME}.elf
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dev/ws2812.pio
     )
+endif()
+
+# Optional MPR121 capacitive touch (pico-mpr121 from third_party)
+set(PICO_MPR121_PATH "${PROJECT_ROOT}/third_party/pico-mpr121")
+if(ENABLE_MPR121 AND EXISTS "${PICO_MPR121_PATH}/lib/CMakeLists.txt")
+    add_subdirectory(${PICO_MPR121_PATH}/lib mpr121)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_MPR121)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/dev/mpr121_touch.c
+    )
+    target_link_libraries(${PROJECT_NAME}.elf PRIVATE pico-mpr121)
+    message(STATUS "MPR121 touch support enabled (pico-mpr121)")
+elseif(ENABLE_MPR121)
+    message(WARNING "ENABLE_MPR121 is ON but third_party/pico-mpr121 not found; run git submodule update --init --recursive")
 endif()
 
 # Optional SSD1306 OLED (u8g2) support

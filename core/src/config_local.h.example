@@ -47,4 +47,9 @@
 // #define OLED_WIDTH 128
 // #define OLED_HEIGHT 64
 
+// MPR121 touch thresholds (0..255). Lower = more sensitive. If some pads (e.g. 2,3) don't trigger, try lower values.
+// Touch must be > release. Defaults: 16, 10.
+// #define MPR121_TOUCH_THRESHOLD 12
+// #define MPR121_RELEASE_THRESHOLD 8
+
 #endif // CONFIG_LOCAL_H
