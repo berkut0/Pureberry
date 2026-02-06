@@ -82,6 +82,136 @@
 #define POTS_ALPHA 0.25f
 #endif
 
+// I2C bus configuration (OLED, MPR121, future I2C devices)
+// Defaults preserve current OLED wiring (GPIO2/3, I2C1, 1MHz).
+// Bus 0 is the default for all devices unless a device selects bus 1.
+#ifndef I2C_BUS0_INSTANCE
+#  ifdef I2C_BUS_INSTANCE
+#    define I2C_BUS0_INSTANCE I2C_BUS_INSTANCE
+#  elif defined(OLED_I2C_INSTANCE)
+#    define I2C_BUS0_INSTANCE OLED_I2C_INSTANCE
+#  else
+#    define I2C_BUS0_INSTANCE 1   // 0 = i2c0, 1 = i2c1
+#  endif
+#endif
+
+#ifndef I2C_BUS0_SDA_PIN
+#  ifdef I2C_BUS_SDA_PIN
+#    define I2C_BUS0_SDA_PIN I2C_BUS_SDA_PIN
+#  elif defined(OLED_I2C_SDA_PIN)
+#    define I2C_BUS0_SDA_PIN OLED_I2C_SDA_PIN
+#  else
+#    define I2C_BUS0_SDA_PIN 2
+#  endif
+#endif
+
+#ifndef I2C_BUS0_SCL_PIN
+#  ifdef I2C_BUS_SCL_PIN
+#    define I2C_BUS0_SCL_PIN I2C_BUS_SCL_PIN
+#  elif defined(OLED_I2C_SCL_PIN)
+#    define I2C_BUS0_SCL_PIN OLED_I2C_SCL_PIN
+#  else
+#    define I2C_BUS0_SCL_PIN 3
+#  endif
+#endif
+
+#ifndef I2C_BUS0_BAUD
+#  ifdef I2C_BUS_BAUD
+#    define I2C_BUS0_BAUD I2C_BUS_BAUD
+#  elif defined(OLED_I2C_BAUD)
+#    define I2C_BUS0_BAUD OLED_I2C_BAUD
+#  else
+#    define I2C_BUS0_BAUD 1000000  // Hz (1 MHz recommended for OLED_REFRESH_FPS 60)
+#  endif
+#endif
+
+#ifndef I2C_BUS0_TIMEOUT_US
+#  ifdef I2C_BUS_TIMEOUT_US
+#    define I2C_BUS0_TIMEOUT_US I2C_BUS_TIMEOUT_US
+#  elif defined(OLED_I2C_TIMEOUT_US)
+#    define I2C_BUS0_TIMEOUT_US OLED_I2C_TIMEOUT_US
+#  else
+#    define I2C_BUS0_TIMEOUT_US 5000
+#  endif
+#endif
+
+#ifndef I2C_BUS1_INSTANCE
+#define I2C_BUS1_INSTANCE I2C_BUS0_INSTANCE
+#endif
+
+#ifndef I2C_BUS1_SDA_PIN
+#define I2C_BUS1_SDA_PIN I2C_BUS0_SDA_PIN
+#endif
+
+#ifndef I2C_BUS1_SCL_PIN
+#define I2C_BUS1_SCL_PIN I2C_BUS0_SCL_PIN
+#endif
+
+#ifndef I2C_BUS1_BAUD
+#define I2C_BUS1_BAUD I2C_BUS0_BAUD
+#endif
+
+#ifndef I2C_BUS1_TIMEOUT_US
+#define I2C_BUS1_TIMEOUT_US I2C_BUS0_TIMEOUT_US
+#endif
+
+// Legacy aliases (bus 0).
+#ifndef I2C_BUS_INSTANCE
+#define I2C_BUS_INSTANCE I2C_BUS0_INSTANCE
+#endif
+#ifndef I2C_BUS_SDA_PIN
+#define I2C_BUS_SDA_PIN I2C_BUS0_SDA_PIN
+#endif
+#ifndef I2C_BUS_SCL_PIN
+#define I2C_BUS_SCL_PIN I2C_BUS0_SCL_PIN
+#endif
+#ifndef I2C_BUS_BAUD
+#define I2C_BUS_BAUD I2C_BUS0_BAUD
+#endif
+#ifndef I2C_BUS_TIMEOUT_US
+#define I2C_BUS_TIMEOUT_US I2C_BUS0_TIMEOUT_US
+#endif
+
+// Helper macro to select i2c0/i2c1 from an instance number.
+#define I2C_GET_INSTANCE(instance_num) ((instance_num) == 0 ? i2c0 : i2c1)
+
+// SPI bus configuration (future peripherals; verify pin mux in datasheet/SDK).
+#ifndef SPI_BUS0_INSTANCE
+#define SPI_BUS0_INSTANCE 0  // 0 = spi0, 1 = spi1
+#endif
+#ifndef SPI_BUS0_SCK_PIN
+#define SPI_BUS0_SCK_PIN 18
+#endif
+#ifndef SPI_BUS0_TX_PIN
+#define SPI_BUS0_TX_PIN 19
+#endif
+#ifndef SPI_BUS0_RX_PIN
+#define SPI_BUS0_RX_PIN 16
+#endif
+#ifndef SPI_BUS0_BAUD
+#define SPI_BUS0_BAUD 1000000
+#endif
+
+#ifndef SPI_BUS1_INSTANCE
+#define SPI_BUS1_INSTANCE SPI_BUS0_INSTANCE
+#endif
+#ifndef SPI_BUS1_SCK_PIN
+#define SPI_BUS1_SCK_PIN SPI_BUS0_SCK_PIN
+#endif
+#ifndef SPI_BUS1_TX_PIN
+#define SPI_BUS1_TX_PIN SPI_BUS0_TX_PIN
+#endif
+#ifndef SPI_BUS1_RX_PIN
+#define SPI_BUS1_RX_PIN SPI_BUS0_RX_PIN
+#endif
+#ifndef SPI_BUS1_BAUD
+#define SPI_BUS1_BAUD SPI_BUS0_BAUD
+#endif
+
+#ifndef SPI_GET_INSTANCE
+#define SPI_GET_INSTANCE(instance_num) ((instance_num) == 0 ? spi0 : spi1)
+#endif
+
 // SSD1306 OLED (u8g2) over I2C
 // Notes:
 // - Default wiring requested: SDA=GPIO2, SCL=GPIO3, addr=0x3C.
@@ -92,29 +222,54 @@
 #define OLED_REFRESH_FPS 60
 #endif
 
-#ifndef OLED_I2C_INSTANCE
-#define OLED_I2C_INSTANCE 1   // 0 = i2c0, 1 = i2c1
+#ifndef OLED_I2C_BUS_ID
+#define OLED_I2C_BUS_ID 0
 #endif
 
-#ifndef OLED_I2C_SDA_PIN
-#define OLED_I2C_SDA_PIN 2
+#ifndef MPR121_I2C_BUS_ID
+#define MPR121_I2C_BUS_ID 0
 #endif
 
-#ifndef OLED_I2C_SCL_PIN
-#define OLED_I2C_SCL_PIN 3
+#if OLED_I2C_BUS_ID == 0
+#  ifndef OLED_I2C_INSTANCE
+#    define OLED_I2C_INSTANCE I2C_BUS0_INSTANCE
+#  endif
+#  ifndef OLED_I2C_SDA_PIN
+#    define OLED_I2C_SDA_PIN I2C_BUS0_SDA_PIN
+#  endif
+#  ifndef OLED_I2C_SCL_PIN
+#    define OLED_I2C_SCL_PIN I2C_BUS0_SCL_PIN
+#  endif
+#  ifndef OLED_I2C_BAUD
+#    define OLED_I2C_BAUD I2C_BUS0_BAUD
+#  endif
+#  ifndef OLED_I2C_TIMEOUT_US
+// Timeout for a whole I2C transaction. Used to prevent a stuck bus from hanging core0.
+#    define OLED_I2C_TIMEOUT_US I2C_BUS0_TIMEOUT_US
+#  endif
+#elif OLED_I2C_BUS_ID == 1
+#  ifndef OLED_I2C_INSTANCE
+#    define OLED_I2C_INSTANCE I2C_BUS1_INSTANCE
+#  endif
+#  ifndef OLED_I2C_SDA_PIN
+#    define OLED_I2C_SDA_PIN I2C_BUS1_SDA_PIN
+#  endif
+#  ifndef OLED_I2C_SCL_PIN
+#    define OLED_I2C_SCL_PIN I2C_BUS1_SCL_PIN
+#  endif
+#  ifndef OLED_I2C_BAUD
+#    define OLED_I2C_BAUD I2C_BUS1_BAUD
+#  endif
+#  ifndef OLED_I2C_TIMEOUT_US
+// Timeout for a whole I2C transaction. Used to prevent a stuck bus from hanging core0.
+#    define OLED_I2C_TIMEOUT_US I2C_BUS1_TIMEOUT_US
+#  endif
+#else
+#  error "OLED_I2C_BUS_ID must be 0 or 1"
 #endif
 
 #ifndef OLED_I2C_ADDR
 #define OLED_I2C_ADDR 0x3C
-#endif
-
-#ifndef OLED_I2C_BAUD
-#define OLED_I2C_BAUD 1000000  // Hz (1 MHz recommended for OLED_REFRESH_FPS 60)
-#endif
-
-#ifndef OLED_I2C_TIMEOUT_US
-// Timeout for a whole I2C transaction. Used to prevent a stuck bus from hanging core0.
-#define OLED_I2C_TIMEOUT_US 5000
 #endif
 
 #ifndef OLED_WIDTH
@@ -139,6 +294,9 @@
 #endif
 #ifndef MPR121_RELEASE_THRESHOLD
 #define MPR121_RELEASE_THRESHOLD 10
+#endif
+#ifndef MPR121_POLL_MS
+#define MPR121_POLL_MS 100
 #endif
 
 #endif // CONFIG_H

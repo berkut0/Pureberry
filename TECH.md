@@ -77,6 +77,29 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 - **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
 - **Context Integration**: Generates CMake manifest (`heavy_sources.cmake`) listing Heavy sources and includes it via `HEAVY_SOURCES_FILE` variable
 
+### Feature Flags (Build-Time Options)
+
+Defaults (when no flags are provided):
+- `ENABLE_WS2812=ON` (opt-out)
+- `ENABLE_OLED=OFF`
+- `ENABLE_MPR121=OFF`
+- `ENABLE_USB_MIDI=OFF`
+- `ENABLE_I2C_DMA=OFF`
+
+Build script flags (single argument per feature):
+```bash
+# Enable optional features
+python scripts/build_firmware.py patch.pd --oled --mpr121 --usb-midi --i2c-dma
+
+# Disable WS2812 (ON by default)
+python scripts/build_firmware.py patch.pd --no-ws2812
+```
+
+You can always pass explicit CMake defines:
+```bash
+python scripts/build_firmware.py patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
+```
+
 ### Logging System
 
 The build script provides a unified logging system with multiple verbosity levels:
@@ -99,12 +122,12 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 ### I2S Configuration
 
-- **Hardware**: PCM5102A DAC (или совместимый I2S DAC)
-- **Пины** задаются в `core/src/config.h` (дефолты) или в `core/src/config_local.h` (локальные переопределения, см. `config_local.h.example`):
-  - `PICO_AUDIO_I2S_DATA_PIN` — DIN (данные)
-  - `PICO_AUDIO_I2S_CLOCK_PIN_BASE` — первый пин тактирования (следующий идёт `base+1`)
+- **Hardware**: PCM5102A DAC (or compatible I2S DAC)
+- **Pins** are configured in `core/src/config.h` (repo defaults) or `core/src/config_local.h` (local overrides; see `config_local.h.example`):
+  - `PICO_AUDIO_I2S_DATA_PIN` — DIN (data)
+  - `PICO_AUDIO_I2S_CLOCK_PIN_BASE` — first clock pin (the next one is `base+1`)
   - `PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED`: 0 = base→LRCLK (WS), base+1→BCLK; 1 = base→BCLK, base+1→LRCLK
-- **Дефолты в репо**: DIN=26, base=27 (LRCLK=27, BCLK=28 при swap=0). Пример для другой разводки (DIN=5, LRCLK=6, BCLK=7, swap=0) — в `config_local.h.example`.
+- **Repo defaults**: DIN=GPIO5, base=GPIO6 (LRCLK=GPIO6, BCLK=GPIO7 when swap=0). Example alternative wiring is in `config_local.h.example`.
 - **Format**: 16-bit signed PCM, stereo, 48 kHz
 
 ### Audio Flow
@@ -167,6 +190,20 @@ These rules define the architecture contracts that must be maintained for correc
    - `ctrl_queue`: core0 pushes, core1 drains once per audio buffer (before `hv_process*()`)
    - `led_queue`: core1 send hooks push, core0 drains in main loop
    - Overflow policy: **drop newest** (implemented in `multicore_audio.c`)
+
+#### I2C Bus Architecture
+
+I2C is managed through a dedicated bus layer (`core/src/drv/i2c_bus.[ch]`) and **must stay on core0**. The bus layer owns:
+- GPIO mux + pullups, `i2c_init()` and controller resets
+- bus recovery (SCL toggling + STOP)
+- timeout-based transfers (no hard hangs)
+- DMA arbitration (OLED refresh vs sensor reads)
+
+Configuration is in `core/src/config.h` with local overrides in `config_local.h`:
+- `I2C_BUS0_*` / `I2C_BUS1_*` define pins, instance, baud, timeouts
+- `OLED_I2C_BUS_ID` / `MPR121_I2C_BUS_ID` select the bus per device
+
+The core0 main loop calls `i2c_bus_poll()` to progress DMA transactions. Leaf drivers must not call `i2c_init()` directly.
 
 #### Failure Modes & Backpressure
 

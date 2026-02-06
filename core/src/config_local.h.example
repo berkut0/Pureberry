@@ -6,7 +6,9 @@
  *
  * Note: `config_local.h` is ignored by git (see .gitignore).
  *
- * USB MIDI is a build-time option: pass -D ENABLE_USB_MIDI=ON to the build script.
+ * USB MIDI is a build-time option:
+ * - Preferred: pass `--usb-midi` to the build script
+ * - Alternative: pass `-D ENABLE_USB_MIDI=ON`
  * Do not #define ENABLE_USB_MIDI here (CMake defines it when the option is ON).
  * Optional in config_local.h: #define USB_MIDI_DEVICE_NAME "MyDevice"
  */
@@ -34,16 +36,30 @@
 // #define POTS_ALPHA 0.25f
 
 // SSD1306 OLED (u8g2) over I2C (optional)
+//
+// I2C bus configuration:
+// - Preferred overrides: I2C_BUS0_* / I2C_BUS1_* (neutral naming for all I2C peripherals)
+// - Legacy: I2C_BUS_* / OLED_I2C_* still work, but map to bus 0 only.
+//
 // Default in repo: SDA=GPIO2, SCL=GPIO3, addr=0x3C (often I2C1), 1 MHz.
 // Frame period and waveform decimation are derived from OLED_REFRESH_FPS.
 // Uncomment and override if your wiring differs. If 1 MHz is unstable, try 400000.
 //
 // #define OLED_REFRESH_FPS 60  // display FPS; frame ms and wave decim are derived
-// #define OLED_I2C_INSTANCE 1   // 0 = i2c0, 1 = i2c1
-// #define OLED_I2C_SDA_PIN 2
-// #define OLED_I2C_SCL_PIN 3
+// #define I2C_BUS0_INSTANCE 1  // 0 = i2c0, 1 = i2c1
+// #define I2C_BUS0_SDA_PIN 2
+// #define I2C_BUS0_SCL_PIN 3
+// #define I2C_BUS0_BAUD 1000000  // 1 MHz; use 400000 if bus glitches
+// #define I2C_BUS0_TIMEOUT_US 5000
 // #define OLED_I2C_ADDR 0x3C
-// #define OLED_I2C_BAUD 1000000  // 1 MHz; use 400000 if bus glitches
+// #define OLED_I2C_BUS_ID 0
+// #define MPR121_I2C_BUS_ID 0
+//
+// Optional second bus (example; verify pin mux in datasheet / SDK):
+// #define I2C_BUS1_INSTANCE 0
+// #define I2C_BUS1_SDA_PIN 4
+// #define I2C_BUS1_SCL_PIN 5
+// #define I2C_BUS1_BAUD 400000
 // #define OLED_WIDTH 128
 // #define OLED_HEIGHT 64
 

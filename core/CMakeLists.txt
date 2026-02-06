@@ -48,9 +48,9 @@ set(CMAKE_CXX_STANDARD 17)
 # Optional features
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
-option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
+option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" OFF)
 option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
-option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" ON)
+option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" OFF)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -60,6 +60,15 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HV_BARE_METAL)
 
 # Make project config visible to pico-sdk (and thus to pico-extras sources too)
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_config.h)
+
+# Optional firmware log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)
+set(FIRMWARE_LOG_LEVEL "" CACHE STRING "Firmware log level (0..3)")
+if(NOT "${FIRMWARE_LOG_LEVEL}" STREQUAL "")
+    if(NOT FIRMWARE_LOG_LEVEL MATCHES "^[0-3]$")
+        message(FATAL_ERROR "FIRMWARE_LOG_LEVEL must be 0..3 (got: '${FIRMWARE_LOG_LEVEL}')")
+    endif()
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE FIRMWARE_LOG_LEVEL=${FIRMWARE_LOG_LEVEL})
+endif()
 
 # Optional I2C DMA helper (device drivers may use it to avoid blocking I2C writes)
 if(ENABLE_I2C_DMA)
@@ -74,6 +83,8 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/multicore_audio.c
     src/patch_api.c
+    src/drv/i2c_bus.c
+    src/drv/spi_bus.c
     src/dev/adc_pots.c
 )
 
@@ -146,45 +157,13 @@ if(ENABLE_OLED)
     )
 
     set(U8G2_CSRC_DIR "${PROJECT_ROOT}/third_party/u8g2/csrc")
+    include(${CMAKE_CURRENT_LIST_DIR}/u8g2_sources.cmake)
 
     target_sources(${PROJECT_NAME}.elf PRIVATE
         src/dev/oled.c
         src/dev/u8g2_pico.c
         src/multicore_display.c
-
-        # u8g2 core (subset)
-        ${U8G2_CSRC_DIR}/u8g2_arc.c
-        ${U8G2_CSRC_DIR}/u8g2_bitmap.c
-        ${U8G2_CSRC_DIR}/u8g2_box.c
-        ${U8G2_CSRC_DIR}/u8g2_buffer.c
-        ${U8G2_CSRC_DIR}/u8g2_circle.c
-        ${U8G2_CSRC_DIR}/u8g2_cleardisplay.c
-        ${U8G2_CSRC_DIR}/u8g2_d_memory.c
-        ${U8G2_CSRC_DIR}/u8g2_d_setup.c
-        ${U8G2_CSRC_DIR}/u8g2_font.c
-        ${U8G2_CSRC_DIR}/u8g2_fonts.c
-        ${U8G2_CSRC_DIR}/u8g2_hvline.c
-        ${U8G2_CSRC_DIR}/u8g2_intersection.c
-        ${U8G2_CSRC_DIR}/u8g2_kerning.c
-        ${U8G2_CSRC_DIR}/u8g2_line.c
-        ${U8G2_CSRC_DIR}/u8g2_ll_hvline.c
-        ${U8G2_CSRC_DIR}/u8g2_message.c
-        ${U8G2_CSRC_DIR}/u8g2_polygon.c
-        ${U8G2_CSRC_DIR}/u8g2_setup.c
-
-        # u8x8 core + SSD1306 driver
-        ${U8G2_CSRC_DIR}/u8x8_8x8.c
-        ${U8G2_CSRC_DIR}/u8x8_byte.c
-        ${U8G2_CSRC_DIR}/u8x8_cad.c
-        ${U8G2_CSRC_DIR}/u8x8_display.c
-        ${U8G2_CSRC_DIR}/u8x8_fonts.c
-        ${U8G2_CSRC_DIR}/u8x8_gpio.c
-        ${U8G2_CSRC_DIR}/u8x8_message.c
-        ${U8G2_CSRC_DIR}/u8x8_setup.c
-        ${U8G2_CSRC_DIR}/u8x8_string.c
-        ${U8G2_CSRC_DIR}/u8x8_u16toa.c
-        ${U8G2_CSRC_DIR}/u8x8_u8toa.c
-        ${U8G2_CSRC_DIR}/u8x8_d_ssd1306_128x64_noname.c
+        ${U8G2_CORE_SOURCES}
     )
 
     target_include_directories(${PROJECT_NAME}.elf PRIVATE
@@ -246,6 +225,7 @@ target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_util
     hardware_dma
     hardware_i2c
+    hardware_spi
     hardware_pwm
     hardware_clocks
     hardware_pio

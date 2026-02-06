@@ -7,15 +7,13 @@
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
-#include "hardware/gpio.h"
-#include "hardware/i2c.h"
 
 #include "config.h"
 #include "dev/u8g2_pico.h"
+#include "drv/i2c_bus.h"
 #include "multicore_display.h"
 
 #ifdef ENABLE_I2C_DMA
-#include "drv/i2c_dma.h"
 #include "hardware/regs/i2c.h"
 #endif
 
@@ -25,8 +23,7 @@ static absolute_time_t g_next_frame;
 static uint32_t g_frame_counter;
 
 #ifdef ENABLE_I2C_DMA
-static i2c_dma_t g_oled_i2c_dma;
-static bool g_oled_i2c_dma_ready;
+static bool g_oled_dma_ready;
 static uint32_t g_oled_cmd_window[7];
 
 enum { OLED_FB_LEN = OLED_WIDTH * (OLED_HEIGHT / 8) };
@@ -49,8 +46,8 @@ static bool oled_dma_prepare_window_cmds(void) {
 }
 
 static bool oled_queue_full_frame_dma(void) {
-    if (!g_oled_i2c_dma_ready) return false;
-    if (i2c_dma_busy(&g_oled_i2c_dma)) return false;
+    if (!g_oled_dma_ready) return false;
+    if (i2c_bus_dma_busy(OLED_I2C_BUS_ID)) return false;
 
     // Build data transaction: control byte 0x40 + framebuffer bytes.
     uint8_t const *fb = u8g2_GetBufferPtr(&g_u8g2);
@@ -82,15 +79,15 @@ static bool oled_queue_full_frame_dma(void) {
         .user = NULL,
     };
 
-    if (!i2c_dma_submit(&g_oled_i2c_dma, &t1)) return false;
-    if (!i2c_dma_submit(&g_oled_i2c_dma, &t2)) return false;
+    if (!i2c_bus_dma_submit(OLED_I2C_BUS_ID, &t1)) return false;
+    if (!i2c_bus_dma_submit(OLED_I2C_BUS_ID, &t2)) return false;
     return true;
 }
 #endif
 
 static void oled_flush(void) {
 #ifdef ENABLE_I2C_DMA
-    if (g_oled_i2c_dma_ready) {
+    if (g_oled_dma_ready) {
         (void)oled_queue_full_frame_dma();
         return;
     }
@@ -99,51 +96,7 @@ static void oled_flush(void) {
 }
 
 static i2c_inst_t *oled_get_i2c(void) {
-#if OLED_I2C_INSTANCE == 0
-    return i2c0;
-#else
-    return i2c1;
-#endif
-}
-
-static void oled_i2c_bus_recover(void) {
-    // Basic I2C bus recovery:
-    // If a slave is holding SDA low, toggle SCL to advance it, then issue a STOP.
-    gpio_init(OLED_I2C_SDA_PIN);
-    gpio_init(OLED_I2C_SCL_PIN);
-    gpio_pull_up(OLED_I2C_SDA_PIN);
-    gpio_pull_up(OLED_I2C_SCL_PIN);
-
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_IN);
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_IN);
-    sleep_us(5);
-
-    if (gpio_get(OLED_I2C_SDA_PIN) != 0) {
-        return; // bus not stuck
-    }
-
-    // Clock out up to 9 pulses on SCL.
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_OUT);
-    for (int i = 0; i < 9; i++) {
-        gpio_put(OLED_I2C_SCL_PIN, 0);
-        sleep_us(5);
-        gpio_put(OLED_I2C_SCL_PIN, 1);
-        sleep_us(5);
-        if (gpio_get(OLED_I2C_SDA_PIN) != 0) break;
-    }
-
-    // Generate STOP: SDA low -> SCL high -> SDA high.
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_OUT);
-    gpio_put(OLED_I2C_SDA_PIN, 0);
-    sleep_us(5);
-    gpio_put(OLED_I2C_SCL_PIN, 1);
-    sleep_us(5);
-    gpio_put(OLED_I2C_SDA_PIN, 1);
-    sleep_us(5);
-
-    // Release lines.
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_IN);
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_IN);
+    return i2c_bus_get_inst((i2c_bus_id_t)OLED_I2C_BUS_ID);
 }
 
 /* Dashed line pattern: segment length and gap in pixels. */
@@ -222,23 +175,21 @@ static void oled_draw_waveform(const uint8_t y[128]) {
 }
 
 bool oled_init(void) {
-    i2c_inst_t *i2c = oled_get_i2c();
-
     // If the bus is stuck (e.g., SDA held low), recover first so init cannot hang core0.
-    oled_i2c_bus_recover();
+    i2c_bus_recover((i2c_bus_id_t)OLED_I2C_BUS_ID);
 
-    // I2C pins
-    gpio_set_function(OLED_I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(OLED_I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(OLED_I2C_SDA_PIN);
-    gpio_pull_up(OLED_I2C_SCL_PIN);
+    if (!i2c_bus_init_once((i2c_bus_id_t)OLED_I2C_BUS_ID)) {
+        return false;
+    }
 
-    i2c_init(i2c, OLED_I2C_BAUD);
+    i2c_inst_t *i2c = oled_get_i2c();
+    if (!i2c) {
+        return false;
+    }
 
 #ifdef ENABLE_I2C_DMA
     // I2C DMA is used only for OLED refresh (TX). u8g2 init remains blocking and is OK at boot.
-    i2c_dma_init(&g_oled_i2c_dma, i2c, -1, 1);
-    g_oled_i2c_dma_ready = (g_oled_i2c_dma.dma_chan >= 0) && oled_dma_prepare_window_cmds();
+    g_oled_dma_ready = i2c_bus_dma_init((i2c_bus_id_t)OLED_I2C_BUS_ID, -1, 1) && oled_dma_prepare_window_cmds();
 #endif
 
     // Setup u8g2 for SSD1306 I2C 128x64 (full framebuffer)
@@ -260,13 +211,6 @@ bool oled_init(void) {
 
 void oled_task(void) {
     if (!g_oled_ready) return;
-
-#ifdef ENABLE_I2C_DMA
-    if (g_oled_i2c_dma_ready) {
-        // Progress DMA completion state machine frequently (non-blocking).
-        i2c_dma_poll(&g_oled_i2c_dma);
-    }
-#endif
 
     absolute_time_t now = get_absolute_time();
     if (absolute_time_diff_us(now, g_next_frame) > 0) {

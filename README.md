@@ -42,6 +42,29 @@ The firmware UF2 file will be generated at:
 build/<patch_name>/firmware-build/rp2350_puredata_firmware.elf.uf2
 ```
 
+### Feature Flags
+
+Defaults (when no flags are provided):
+- `ENABLE_WS2812=ON` (opt-out)
+- `ENABLE_OLED=OFF`
+- `ENABLE_MPR121=OFF`
+- `ENABLE_USB_MIDI=OFF`
+- `ENABLE_I2C_DMA=OFF`
+
+CLI flags (single argument per feature):
+```bash
+# Enable optional features
+python scripts/build_firmware.py pd-patches/your_patch.pd --oled --mpr121 --usb-midi --i2c-dma
+
+# Disable WS2812 (ON by default)
+python scripts/build_firmware.py pd-patches/your_patch.pd --no-ws2812
+```
+
+You can always pass explicit CMake defines:
+```bash
+python scripts/build_firmware.py pd-patches/your_patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
+```
+
 ### Logging Levels
 
 The build script supports multiple verbosity levels:
@@ -52,6 +75,10 @@ The build script supports multiple verbosity levels:
 - `--log-level quiet` or `-q` - errors only
 
 Build log is saved to `build/<patch>/build_firmware.log` (full subprocess output in verbose/debug modes; script messages only in normal/quiet).
+
+### Windows USB note (CDC / COM port)
+
+On some Windows setups, the default CDC-only build (no `--usb-midi`) may enumerate as a broken device (e.g. **Code 10**) and no COM port is created. See `docs/USB_DEBUG.md` for current observations and workarounds.
 
 ## Configuration
 
@@ -67,6 +94,14 @@ Default pins (on typical RP2040/RP2350A builds, GPIO 26–29 remain free for on-
 - BCK (bit clock): GPIO 7
 
 Default peripherals do not conflict: OLED uses GPIO 2/3, WS2812 uses GPIO 16 (see `config.h`). See `config_local.h.example` for overrides.
+
+### I2C Bus Configuration
+
+I2C is initialized through a central bus layer on core0. Configure pins and baud rate in:
+- `core/src/config.h` - defaults
+- `core/src/config_local.h` - local overrides (copy `config_local.h.example`)
+
+Use `I2C_BUS0_*` / `I2C_BUS1_*` to define buses, and `OLED_I2C_BUS_ID` / `MPR121_I2C_BUS_ID` to select which bus each device uses. Legacy `I2C_BUS_*` / `OLED_I2C_*` macros still map to bus 0.
 
 ## Flashing
 

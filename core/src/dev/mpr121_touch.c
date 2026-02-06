@@ -7,6 +7,7 @@
 
 #include "dev/mpr121_touch.h"
 #include "config.h"
+#include "drv/i2c_bus.h"
 #include "multicore_audio.h"
 #include "HvHeavy.h"
 
@@ -14,13 +15,12 @@
 #include "pico/time.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
-#include "hardware/i2c.h"
-
 #include "mpr121.h"
 
 #include <stdio.h>
 
-#define MPR121_TOUCH_NAMES 12
+#define MPR121_TOUCH_NAMES MPR121_NUM_ELECTRODES
+#define MPR121_NAME_BUFFER_SIZE 16
 
 static mpr121_sensor_t g_sensor;
 static bool g_ready;
@@ -33,7 +33,6 @@ static volatile bool g_irq_pending;
 
 /* Polling fallback when IRQ never fires (e.g. IRQ pin not connected). */
 static uint32_t g_last_poll_ms;
-#define MPR121_POLL_MS 100
 
 /* Raw IRQ handler: dedicated to this pin, must acknowledge. Callback API shares one handler and can be overwritten. */
 static void mpr121_raw_irq_handler(void) {
@@ -45,17 +44,13 @@ static void mpr121_raw_irq_handler(void) {
 }
 
 static i2c_inst_t *mpr121_get_i2c(void) {
-#if OLED_I2C_INSTANCE == 0
-    return i2c0;
-#else
-    return i2c1;
-#endif
+    return i2c_bus_get_inst((i2c_bus_id_t)MPR121_I2C_BUS_ID);
 }
 
 static void ensure_touch_hashes(void) {
     if (g_hashes_done) return;
     for (int i = 0; i < MPR121_TOUCH_NAMES; i++) {
-        char name[16];
+        char name[MPR121_NAME_BUFFER_SIZE];
         snprintf(name, sizeof(name), "touch%u", (unsigned)(i + 1));
         g_hash_touch[i] = (uint32_t) hv_stringToHash(name);
         snprintf(name, sizeof(name), "touch%u_level", (unsigned)(i + 1));
@@ -65,17 +60,21 @@ static void ensure_touch_hashes(void) {
 }
 
 /** Probe I2C: try to read one byte from MPR121. Returns true if device ACKs. */
-static bool mpr121_probe(i2c_inst_t *i2c, uint8_t addr) {
+static bool mpr121_probe(i2c_bus_id_t bus_id, uint8_t addr) {
     uint8_t reg = 0x00;  /* touch status register, read-only */
-    int nw = i2c_write_blocking(i2c, addr, &reg, 1, true);
+    int nw = i2c_bus_write_timeout(bus_id, addr, &reg, 1, true);
     if (nw != 1) return false;
     uint8_t dummy;
-    int nr = i2c_read_blocking(i2c, addr, &dummy, 1, false);
+    int nr = i2c_bus_read_timeout(bus_id, addr, &dummy, 1);
     return (nr == 1);
 }
 
 bool mpr121_touch_init(void) {
     if (g_ready) return true;
+
+    if (!i2c_bus_init_once((i2c_bus_id_t)MPR121_I2C_BUS_ID)) {
+        return false;
+    }
 
     i2c_inst_t *i2c = mpr121_get_i2c();
     if (!i2c) {
@@ -83,7 +82,7 @@ bool mpr121_touch_init(void) {
     }
 
     uint8_t addr = (uint8_t) MPR121_I2C_ADDR;
-    if (!mpr121_probe(i2c, addr)) {
+    if (!mpr121_probe((i2c_bus_id_t)MPR121_I2C_BUS_ID, addr)) {
         printf("MPR121: no device at I2C addr 0x%02X (probe NACK)\n", (unsigned)addr);
         return false;
     }
@@ -110,7 +109,7 @@ bool mpr121_touch_init(void) {
     return true;
 }
 
-#define MPR121_FILTERED_MAX 1023.f  /* 10-bit filtered data */
+#define MPR121_FILTERED_DATA_MAX 1023.0f  /* 10-bit filtered data */
 
 static void mpr121_read_and_push(void) {
     uint16_t touched;
@@ -129,7 +128,7 @@ static void mpr121_read_and_push(void) {
     for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
         uint16_t raw;
         mpr121_filtered_data((uint8_t)i, &raw, &g_sensor);
-        float level = (float)raw / MPR121_FILTERED_MAX;
+        float level = (float)raw / MPR121_FILTERED_DATA_MAX;
         if (level > 1.0f) level = 1.0f;
         ctrl_push_hash_f(g_hash_touch_level[i], level);
     }

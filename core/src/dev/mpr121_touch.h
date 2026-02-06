@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-/** Initialize MPR121 and GPIO IRQ. Call after I2C bus is inited (e.g. after oled_init()). */
+/** Initialize MPR121 and GPIO IRQ (core0). */
 bool mpr121_touch_init(void);
 
 /** Poll touch state and push changes to touch1..touch12. Call from core0 main loop. */
