@@ -17,7 +17,6 @@
 
 // Firmware configuration
 #include "config.h"
-#include "debug.h"
 #include "multicore_audio.h"
 #include "drv/i2c_bus.h"
 
@@ -102,7 +101,6 @@ static audio_buffer_pool_t *audio_pool = NULL;
 
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
-static bool audio_ready;
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
 static float pots_last_sent[POTS_MAX];
@@ -174,47 +172,30 @@ static void init_usb_subsystem(void) {
     // Initialize USB CDC for printf
     usb_cdc_init();
 
-    LOG_INFO("=== RP2350 Pure Data Firmware ===");
-#ifdef ENABLE_USB_MIDI
-    LOG_INFO("USB Mode: CDC+MIDI composite device");
-#else
-    LOG_INFO("USB Mode: CDC only (no MIDI)");
-#endif
-    LOG_INFO("Initializing...");
 }
 
 static void init_audio_subsystem(void) {
     // Setup I2S audio output
     const audio_format_t *output_format = audio_i2s_setup(&audio_format, &i2s_config);
     if (output_format == NULL) {
-        LOG_ERROR("Failed to setup I2S audio");
-        LOG_WARN("Continuing without audio...");
         // Don't return -1, continue to main loop for debugging
         return;
     }
 
     // No special I2S GPIO configuration required for this use case.
-    LOG_INFO("I2S audio setup successful");
-    LOG_INFO("  Sample rate: %d Hz", output_format->sample_freq);
-    LOG_INFO("  Format: %d, Channels: %d", output_format->format, output_format->channel_count);
-
     // Create audio buffer pool for output (only if I2S setup succeeded)
     audio_pool = audio_new_producer_pool(&audio_buffer_format, 3, AUDIO_BLOCK_SIZE);
     if (audio_pool == NULL) {
-        LOG_ERROR("Failed to create audio buffer pool");
         return;
     }
 
     // Connect audio producer to I2S output
     if (!audio_i2s_connect(audio_pool)) {
-        LOG_ERROR("Failed to connect audio to I2S");
         return;
     }
 
     // Enable I2S audio output
     audio_i2s_set_enabled(true);
-    audio_ready = true;
-    LOG_INFO("Audio I2S connected and enabled");
 }
 
 static bool init_heavy_context(void) {
@@ -222,59 +203,10 @@ static bool init_heavy_context(void) {
     // Note: Function name is always hv_patch_new() since we use "patch" as project name
     heavy_context = hv_patch_new((double)SAMPLE_RATE);
     if (heavy_context == NULL) {
-        LOG_ERROR("Failed to create Heavy context");
         return false;
     }
-    LOG_INFO("Heavy context created (sample rate: %d Hz)", SAMPLE_RATE);
-
     /* Single entry point for send hook: only patch_api_init() calls hv_setSendHook() */
     patch_api_init(heavy_context);
-    return true;
-}
-
-static bool soft_reboot_patch_runtime(void) {
-    // Keep USB alive; restart patch/audio runtime only.
-    LOG_WARN("Soft reboot: restarting patch runtime");
-
-    // Stop audio output to avoid underflows/glitches while core1 is down.
-    if (audio_ready) {
-        audio_i2s_set_enabled(false);
-    }
-
-    multicore_reset_core1();
-
-    // Clear any queued events from the previous runtime.
-    {
-        hv_event_t ev;
-        while (queue_try_remove(&ctrl_queue, &ev)) {
-            (void)0;
-        }
-    }
-    {
-        led_cmd_t cmd;
-        while (queue_try_remove(&led_queue, &cmd)) {
-            (void)0;
-        }
-    }
-
-    if (heavy_context != NULL) {
-        hv_patch_free(heavy_context);
-        heavy_context = NULL;
-    }
-
-    if (!init_heavy_context()) {
-        LOG_ERROR("Soft reboot: hv_patch_new failed");
-        return false;
-    }
-
-    __sync_synchronize();
-    multicore_launch_core1(audio_core_main);
-
-    if (audio_ready) {
-        audio_i2s_set_enabled(true);
-    }
-
-    LOG_INFO("Soft reboot: done");
     return true;
 }
 
@@ -284,27 +216,15 @@ static void init_peripherals(HeavyContextInterface *ctx) {
 #endif
 
 #ifdef ENABLE_WS2812
-    if (ws2812_init_with_hook(WS2812_PIN, WS2812_NUM_LEDS, ctx)) {
-        LOG_INFO("WS2812 initialized (pin: %d, LEDs: %d)", WS2812_PIN, WS2812_NUM_LEDS);
-    } else {
-        LOG_WARN("WS2812 initialization failed");
-    }
+    (void) ws2812_init_with_hook(WS2812_PIN, WS2812_NUM_LEDS, ctx);
 #endif
 
 #ifdef ENABLE_OLED
-    if (oled_init()) {
-        LOG_INFO("OLED initialized (SSD1306 I2C, addr 0x%02X)", OLED_I2C_ADDR);
-    } else {
-        LOG_WARN("OLED initialization failed");
-    }
+    (void) oled_init();
 #endif
 
 #ifdef ENABLE_MPR121
-    if (mpr121_touch_init()) {
-        LOG_INFO("MPR121 touch initialized (IRQ GPIO%d, addr 0x%02X)", MPR121_IRQ_PIN, MPR121_I2C_ADDR);
-    } else {
-        LOG_WARN("MPR121 touch initialization failed");
-    }
+    (void) mpr121_touch_init();
 #endif
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
@@ -314,15 +234,6 @@ static void init_peripherals(HeavyContextInterface *ctx) {
                 pots_last_sent[i] = -1.f;
             }
             pots_last_poll_ms = 0;
-            LOG_INFO("ADC pots initialized (knob1..knob%u, poll %d ms)", (unsigned)POTS_COUNT, POTS_POLL_MS);
-        } else {
-            LOG_WARN("ADC pots disabled (init failed).");
-            LOG_INFO("  ADC channels: %u..%u",
-                     (unsigned)POTS_ADC_FIRST_CHANNEL,
-                     (unsigned)(POTS_ADC_FIRST_CHANNEL + POTS_COUNT - 1));
-            LOG_INFO("  GPIO mapping depends on chip:");
-            LOG_INFO("    RP2040/RP2350A: ch0-3 = GPIO26-29");
-            LOG_INFO("    RP2350B: ch0-7 = GPIO40-47");
         }
     }
 #endif
@@ -360,22 +271,10 @@ int main() {
 
     __sync_synchronize();
     multicore_launch_core1(audio_core_main);
-    LOG_INFO("Entering main loop (core0)...");
 
     while (true) {
         tud_task();
-#ifdef ENABLE_USB_MIDI
-        static bool last_midi_mounted;
-        bool now_midi_mounted = usb_midi_mounted();
-        if (now_midi_mounted != last_midi_mounted) {
-            LOG_INFO("USB MIDI %s", now_midi_mounted ? "mounted" : "unmounted");
-            last_midi_mounted = now_midi_mounted;
-        }
-#endif
         usb_cdc_task();
-        if (usb_cdc_take_soft_reboot_request()) {
-            (void)soft_reboot_patch_runtime();
-        }
 #ifdef ENABLE_USB_MIDI
         usb_midi_task();
 #endif

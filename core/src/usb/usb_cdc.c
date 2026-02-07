@@ -12,8 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static volatile bool soft_reboot_requested;
-
 // Initialize USB CDC
 void usb_cdc_init(void) {
     // Register binary info
@@ -61,87 +59,9 @@ int usb_cdc_read_chars(char *buf, int length) {
     return (int)count;
 }
 
-static void usb_cdc_write_str(const char *s) {
-    if (!s) return;
-    (void)tud_cdc_write(s, (uint32_t)strlen(s));
-}
-
-static void usb_cdc_handle_line(const char *line) {
-    if (!line || !line[0]) return;
-
-    if (strcmp(line, "reboot") == 0 || strcmp(line, "restart") == 0) {
-        soft_reboot_requested = true;
-        usb_cdc_write_str("OK: soft reboot requested\r\n");
-        return;
-    }
-    if (strcmp(line, "ping") == 0) {
-        usb_cdc_write_str("pong\r\n");
-        return;
-    }
-    if (strcmp(line, "help") == 0) {
-        usb_cdc_write_str("Commands: help, ping, ver, reboot\r\n");
-        return;
-    }
-    if (strcmp(line, "ver") == 0) {
-        usb_cdc_write_str("rp2350-puredata (USB CDC debug)\r\n");
-        return;
-    }
-
-    usb_cdc_write_str("ERR: unknown command (try 'help')\r\n");
-}
-
 void usb_cdc_task(void) {
-    static bool was_connected;
-    static char line_buf[128];
-    static size_t line_len;
-
-    bool now_connected = usb_cdc_connected();
-    if (!now_connected) {
-        was_connected = false;
-        line_len = 0;
-        return;
-    }
-
-    if (!was_connected) {
-        usb_cdc_write_str("rp2350-puredata CDC ready\r\n");
-        was_connected = true;
-    }
-
-    while (tud_cdc_available()) {
-        uint8_t buf[64];
-        uint32_t n = tud_cdc_read(buf, sizeof(buf));
-        if (!n) break;
-
-        // Echo bytes back (debug aid).
-        (void)tud_cdc_write(buf, n);
-
-        for (uint32_t i = 0; i < n; i++) {
-            char c = (char)buf[i];
-            if (c == '\r' || c == '\n') {
-                if (line_len) {
-                    line_buf[line_len] = '\0';
-                    usb_cdc_handle_line(line_buf);
-                    line_len = 0;
-                }
-                continue;
-            }
-
-            if (line_len + 1 < sizeof(line_buf)) {
-                line_buf[line_len++] = c;
-            } else {
-                // Line too long: reset to avoid partial command execution.
-                line_len = 0;
-            }
-        }
-    }
-
+    if (!usb_cdc_connected()) return;
     (void)tud_cdc_write_flush();
-}
-
-bool usb_cdc_take_soft_reboot_request(void) {
-    if (!soft_reboot_requested) return false;
-    soft_reboot_requested = false;
-    return true;
 }
 
 //--------------------------------------------------------------------+

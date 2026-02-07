@@ -99,7 +99,6 @@ static void process_midi_packet(const uint8_t packet[4]) {
             break;
 
         default:
-            if (status >= MIDI_SYSTEM) printf("[MIDI] System message: 0x%02X\n", status);
             break;
     }
 }
@@ -107,7 +106,6 @@ static void process_midi_packet(const uint8_t packet[4]) {
 void usb_midi_init(void) {
     usb_midi_reset_stats();
     midi_mounted = tud_midi_mounted();
-    printf("USB MIDI initialized (multicore: ctrl_queue)\n");
 }
 
 void usb_midi_task(void) {
