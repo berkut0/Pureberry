@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
+static volatile bool soft_reboot_requested;
+
 // Initialize USB CDC
 void usb_cdc_init(void) {
     // Register binary info
@@ -67,12 +69,17 @@ static void usb_cdc_write_str(const char *s) {
 static void usb_cdc_handle_line(const char *line) {
     if (!line || !line[0]) return;
 
+    if (strcmp(line, "reboot") == 0 || strcmp(line, "restart") == 0) {
+        soft_reboot_requested = true;
+        usb_cdc_write_str("OK: soft reboot requested\r\n");
+        return;
+    }
     if (strcmp(line, "ping") == 0) {
         usb_cdc_write_str("pong\r\n");
         return;
     }
     if (strcmp(line, "help") == 0) {
-        usb_cdc_write_str("Commands: help, ping, ver\r\n");
+        usb_cdc_write_str("Commands: help, ping, ver, reboot\r\n");
         return;
     }
     if (strcmp(line, "ver") == 0) {
@@ -129,6 +136,12 @@ void usb_cdc_task(void) {
     }
 
     (void)tud_cdc_write_flush();
+}
+
+bool usb_cdc_take_soft_reboot_request(void) {
+    if (!soft_reboot_requested) return false;
+    soft_reboot_requested = false;
+    return true;
 }
 
 //--------------------------------------------------------------------+

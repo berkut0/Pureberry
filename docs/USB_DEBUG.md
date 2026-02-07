@@ -18,6 +18,7 @@ What to do:
 - The firmware prints a one-time banner on connect: `rp2350-puredata CDC ready`.
 - Try sending `ping` + Enter; you should get `pong` (plus an echo of what you typed).
 - `help` shows available commands.
+- `reboot` performs a **soft reboot** of the patch runtime (keeps USB/COM connected).
 
 If you get echo + `pong`, CDC RX/TX is alive and the issue is in higher-level logic (or expectations about when `printf` appears).
 

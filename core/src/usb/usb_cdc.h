@@ -50,6 +50,16 @@ int usb_cdc_read_chars(char *buf, int length);
  */
 void usb_cdc_task(void);
 
+/**
+ * Soft reboot request (from CDC command).
+ *
+ * This is a firmware-level restart of the patch/audio runtime while keeping USB alive.
+ * Call `usb_cdc_take_soft_reboot_request()` from the core0 main loop and perform the reboot there.
+ *
+ * @return true exactly once per request.
+ */
+bool usb_cdc_take_soft_reboot_request(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -102,6 +102,7 @@ static audio_buffer_pool_t *audio_pool = NULL;
 
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
+static bool audio_ready;
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
 static float pots_last_sent[POTS_MAX];
@@ -212,6 +213,7 @@ static void init_audio_subsystem(void) {
 
     // Enable I2S audio output
     audio_i2s_set_enabled(true);
+    audio_ready = true;
     LOG_INFO("Audio I2S connected and enabled");
 }
 
@@ -227,6 +229,52 @@ static bool init_heavy_context(void) {
 
     /* Single entry point for send hook: only patch_api_init() calls hv_setSendHook() */
     patch_api_init(heavy_context);
+    return true;
+}
+
+static bool soft_reboot_patch_runtime(void) {
+    // Keep USB alive; restart patch/audio runtime only.
+    LOG_WARN("Soft reboot: restarting patch runtime");
+
+    // Stop audio output to avoid underflows/glitches while core1 is down.
+    if (audio_ready) {
+        audio_i2s_set_enabled(false);
+    }
+
+    multicore_reset_core1();
+
+    // Clear any queued events from the previous runtime.
+    {
+        hv_event_t ev;
+        while (queue_try_remove(&ctrl_queue, &ev)) {
+            (void)0;
+        }
+    }
+    {
+        led_cmd_t cmd;
+        while (queue_try_remove(&led_queue, &cmd)) {
+            (void)0;
+        }
+    }
+
+    if (heavy_context != NULL) {
+        hv_patch_free(heavy_context);
+        heavy_context = NULL;
+    }
+
+    if (!init_heavy_context()) {
+        LOG_ERROR("Soft reboot: hv_patch_new failed");
+        return false;
+    }
+
+    __sync_synchronize();
+    multicore_launch_core1(audio_core_main);
+
+    if (audio_ready) {
+        audio_i2s_set_enabled(true);
+    }
+
+    LOG_INFO("Soft reboot: done");
     return true;
 }
 
@@ -325,6 +373,9 @@ int main() {
         }
 #endif
         usb_cdc_task();
+        if (usb_cdc_take_soft_reboot_request()) {
+            (void)soft_reboot_patch_runtime();
+        }
 #ifdef ENABLE_USB_MIDI
         usb_midi_task();
 #endif
