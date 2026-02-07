@@ -1,8 +1,12 @@
 /*
- * USB Descriptors for RP2350 Pure Data Firmware
- * 
- * Composite Device: CDC (debug serial) + MIDI (music input)
- * Based on TinyUSB examples with IAD for Windows compatibility
+ * USB descriptors for RP2350 Pure Data Firmware.
+ *
+ * USB device always exposes CDC (stdio). USB MIDI is optional and controlled by ENABLE_USB_MIDI
+ * (via CFG_TUD_MIDI in tusb_config.h).
+ *
+ * Design goals:
+ * - Stable Windows enumeration (USB 2.0, composite via IAD).
+ * - Minimal descriptor surface area in CDC-only builds.
  */
 
 #include "tusb.h"
@@ -63,8 +67,10 @@ uint8_t const *tud_descriptor_device_cb(void) {
 enum {
     ITF_NUM_CDC_CONTROL = 0,
     ITF_NUM_CDC_DATA,
+#if CFG_TUD_MIDI
     ITF_NUM_MIDI,
     ITF_NUM_MIDI_STREAMING,
+#endif
     ITF_NUM_TOTAL
 };
 
@@ -76,7 +82,11 @@ enum {
 #define EPNUM_MIDI_OUT    0x03
 #define EPNUM_MIDI_IN     0x83
 
+#if CFG_TUD_MIDI
 #define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MIDI_DESC_LEN)
+#else
+#define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN)
+#endif
 
 // Full speed configuration
 uint8_t const desc_fs_configuration[] = {
@@ -86,8 +96,10 @@ uint8_t const desc_fs_configuration[] = {
     // CDC: Interface number, string index, EP notification address and size, EP data address (out, in) and size
     TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_CONTROL, 4, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
 
+#if CFG_TUD_MIDI
     // MIDI: Interface number, string index, EP Out & EP In address, EP size
     TUD_MIDI_DESCRIPTOR(ITF_NUM_MIDI, 5, EPNUM_MIDI_OUT, EPNUM_MIDI_IN, 64)
+#endif
 };
 
 #if TUD_OPT_HIGH_SPEED
@@ -99,8 +111,10 @@ uint8_t const desc_hs_configuration[] = {
     // CDC: Interface number, string index, EP notification address and size, EP data address (out, in) and size
     TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_CONTROL, 4, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 512),
 
+#if CFG_TUD_MIDI
     // MIDI: Interface number, string index, EP Out & EP In address, EP size
     TUD_MIDI_DESCRIPTOR(ITF_NUM_MIDI, 5, EPNUM_MIDI_OUT, EPNUM_MIDI_IN, 512)
+#endif
 };
 #endif
 

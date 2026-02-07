@@ -19,8 +19,11 @@
 #include <stdio.h>
 #include <string.h>
 
-// MIDI statistics
+// MIDI statistics (debugging)
 static usb_midi_stats_t midi_stats = {0};
+
+// MIDI mount state (TinyUSB callbacks update this; read from main loop)
+static volatile bool midi_mounted;
 
 // MIDI message types (status byte high nibble)
 #define MIDI_NOTE_OFF         0x80
@@ -102,7 +105,8 @@ static void process_midi_packet(const uint8_t packet[4]) {
 }
 
 void usb_midi_init(void) {
-    memset(&midi_stats, 0, sizeof(midi_stats));
+    usb_midi_reset_stats();
+    midi_mounted = tud_midi_mounted();
     printf("USB MIDI initialized (multicore: ctrl_queue)\n");
 }
 
@@ -115,19 +119,15 @@ void usb_midi_task(void) {
     }
 }
 
-// Check if MIDI is mounted
 bool usb_midi_mounted(void) {
-    return tud_midi_mounted();
+    return midi_mounted;
 }
 
-// Get MIDI statistics
 void usb_midi_get_stats(usb_midi_stats_t *stats) {
-    if (stats) {
-        memcpy(stats, &midi_stats, sizeof(usb_midi_stats_t));
-    }
+    if (!stats) return;
+    memcpy(stats, &midi_stats, sizeof(*stats));
 }
 
-// Reset MIDI statistics
 void usb_midi_reset_stats(void) {
     memset(&midi_stats, 0, sizeof(midi_stats));
 }
@@ -139,13 +139,13 @@ void usb_midi_reset_stats(void) {
 // Invoked when MIDI interface is mounted
 void tud_midi_mount_cb(uint8_t itf) {
     (void)itf;
-    printf("USB MIDI mounted\n");
+    midi_mounted = true;
 }
 
 // Invoked when MIDI interface is unmounted
 void tud_midi_umount_cb(uint8_t itf) {
     (void)itf;
-    printf("USB MIDI unmounted\n");
+    midi_mounted = false;
 }
 
 // Invoked when MIDI RX has data

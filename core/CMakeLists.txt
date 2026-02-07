@@ -177,44 +177,27 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/dev
 )
 
-# USB configuration: either pico_stdio_usb (default) or custom TinyUSB (MIDI enabled)
+# USB configuration: always use TinyUSB device stack, with optional MIDI interface.
+#
+# Rationale:
+# - pico_stdio_usb owns USB (descriptors, background tud_task) and does not scale to composite devices.
+# - Our firmware must use one stable USB stack in all builds; ENABLE_USB_MIDI toggles only interfaces.
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    tinyusb_device
+    tinyusb_board
+)
+
+target_sources(${PROJECT_NAME}.elf PRIVATE
+    src/usb/usb_descriptors.c
+    src/usb/usb_cdc.c
+)
+
 if(ENABLE_USB_MIDI)
-    # Custom TinyUSB for CDC+MIDI composite device
-    
-    # Enable TinyUSB device library (this sets up all the necessary flags)
-    set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
-    
-    # Define that we're using TinyUSB device mode
-    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE 
-        ENABLE_USB_MIDI
-        LIB_TINYUSB_DEVICE=1
-        CFG_TUSB_MCU=OPT_MCU_RP2040
-        CFG_TUSB_OS=OPT_OS_NONE
-    )
-    
-    # Include tusb_config.h from src directory
-    target_include_directories(${PROJECT_NAME}.elf PUBLIC 
-        ${CMAKE_CURRENT_LIST_DIR}/src
-    )
-    
-    # Link TinyUSB device stack
-    target_link_libraries(${PROJECT_NAME}.elf PRIVATE
-        tinyusb_device
-        tinyusb_board
-    )
-    
-    # USB source files
-    target_sources(${PROJECT_NAME}.elf PRIVATE
-        src/usb/usb_descriptors.c
-        src/usb/usb_cdc.c
-        src/usb/usb_midi.c
-    )
-    
-    message(STATUS "USB MIDI enabled: Using custom TinyUSB (CDC+MIDI)")
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_MIDI)
+    target_sources(${PROJECT_NAME}.elf PRIVATE src/usb/usb_midi.c)
+    message(STATUS "USB MIDI enabled: TinyUSB composite (CDC+MIDI)")
 else()
-    # Default: use pico_stdio_usb (CDC only, simpler)
-    pico_enable_stdio_usb(${PROJECT_NAME}.elf 1)
-    message(STATUS "USB MIDI disabled: Using pico_stdio_usb (CDC only)")
+    message(STATUS "USB MIDI disabled: TinyUSB (CDC only)")
 endif()
 
 # Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t; hardware_adc for pots)

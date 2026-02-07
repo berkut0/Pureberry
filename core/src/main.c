@@ -51,10 +51,12 @@
 #include "dev/mpr121_touch.h"
 #endif
 
-// Optional USB MIDI support
-#ifdef ENABLE_USB_MIDI
+// USB (TinyUSB device stack)
 #include "tusb.h"
 #include "usb/usb_cdc.h"
+
+// Optional USB MIDI support
+#ifdef ENABLE_USB_MIDI
 #include "usb/usb_midi.h"
 #endif
 
@@ -67,7 +69,6 @@
 // USB initialization
 #define USB_INIT_ITERATIONS 100
 #define USB_INIT_DELAY_MS 1
-#define USB_SERIAL_DELAY_MS 100
 
 // Main loop
 #define MAIN_LOOP_SLEEP_US 100
@@ -159,8 +160,7 @@ static void audio_core_main(void) {
 }
 
 static void init_usb_subsystem(void) {
-#ifdef ENABLE_USB_MIDI
-    // Custom TinyUSB initialization for CDC+MIDI
+    // TinyUSB initialization (CDC always; MIDI optional)
     tusb_init();
 
     // Service USB immediately after init for enumeration
@@ -174,16 +174,10 @@ static void init_usb_subsystem(void) {
     usb_cdc_init();
 
     LOG_INFO("=== RP2350 Pure Data Firmware ===");
-    LOG_INFO("USB MIDI Mode: CDC+MIDI composite device");
+#ifdef ENABLE_USB_MIDI
+    LOG_INFO("USB Mode: CDC+MIDI composite device");
 #else
-    // Standard stdio initialization (pico_stdio_usb)
-    stdio_init_all();
-
-    // Wait a bit for USB serial to be ready
-    sleep_ms(USB_SERIAL_DELAY_MS);
-
-    LOG_INFO("=== RP2350 Pure Data Firmware ===");
-    LOG_INFO("Standard Mode: CDC only (no MIDI)");
+    LOG_INFO("USB Mode: CDC only (no MIDI)");
 #endif
     LOG_INFO("Initializing...");
 }
@@ -321,8 +315,17 @@ int main() {
     LOG_INFO("Entering main loop (core0)...");
 
     while (true) {
-#ifdef ENABLE_USB_MIDI
         tud_task();
+#ifdef ENABLE_USB_MIDI
+        static bool last_midi_mounted;
+        bool now_midi_mounted = usb_midi_mounted();
+        if (now_midi_mounted != last_midi_mounted) {
+            LOG_INFO("USB MIDI %s", now_midi_mounted ? "mounted" : "unmounted");
+            last_midi_mounted = now_midi_mounted;
+        }
+#endif
+        usb_cdc_task();
+#ifdef ENABLE_USB_MIDI
         usb_midi_task();
 #endif
         multicore_drain_led();

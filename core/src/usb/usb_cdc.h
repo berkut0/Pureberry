@@ -43,6 +43,13 @@ void usb_cdc_flush(void);
  */
 int usb_cdc_read_chars(char *buf, int length);
 
+/**
+ * Service CDC I/O (RX commands/echo, periodic flush).
+ *
+ * Call from the core0 main loop near `tud_task()`.
+ */
+void usb_cdc_task(void);
+
 #ifdef __cplusplus
 }
 #endif

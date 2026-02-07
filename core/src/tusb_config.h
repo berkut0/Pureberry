@@ -1,7 +1,7 @@
 /*
- * TinyUSB Configuration for RP2350 Pure Data Firmware
- * 
- * Composite USB Device: CDC (serial debug) + MIDI (music input)
+ * TinyUSB configuration for RP2350 Pure Data Firmware.
+ *
+ * We always expose USB CDC (stdio). USB MIDI is optional and controlled by ENABLE_USB_MIDI.
  */
 
 #ifndef _TUSB_CONFIG_H_
@@ -78,11 +78,15 @@ extern "C" {
 
 //------------- CLASS -------------//
 
-// CDC for debug/printf output (replaces pico_stdio_usb)
+// CDC for debug/printf output
 #define CFG_TUD_CDC               1
 
-// MIDI for music input
+// Optional MIDI interface
+#ifdef ENABLE_USB_MIDI
 #define CFG_TUD_MIDI              1
+#else
+#define CFG_TUD_MIDI              0
+#endif
 
 // Disabled classes
 #define CFG_TUD_MSC               0

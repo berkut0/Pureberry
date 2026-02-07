@@ -27,12 +27,14 @@ void usb_midi_init(void);
 void usb_midi_task(void);
 
 /**
- * Check if MIDI is mounted and ready
+ * Check if MIDI is mounted and ready.
+ *
+ * Note: "mounted" means the USB configuration is set and the MIDI interface is active.
  */
 bool usb_midi_mounted(void);
 
 /**
- * Get MIDI statistics (for debugging)
+ * MIDI statistics (debugging).
  */
 typedef struct {
     uint32_t note_on_count;
