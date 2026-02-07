@@ -9,9 +9,10 @@ This project compiles Pure Data patches into firmware for the RP2350 microcontro
 ## Requirements
 
 - **Python 3.9+**
-- **hvcc** (`pip install -r requirements.txt`)
+- **Python dependencies** (`pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`)
 - **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
 - **CMake 3.13+**
+- **Host C/C++ compiler** (needed for Pico SDK host tools like `pioasm`; e.g. LLVM Clang or Visual Studio Build Tools)
 - **ARM GCC toolchain** (arm-none-eabi-gcc)
 - **picotool** (optional, for manual flashing) - included as git submodule
 

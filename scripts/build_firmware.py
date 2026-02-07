@@ -31,25 +31,39 @@ DEFAULT_LOG_LEVEL = "normal"
 
 # CMake feature options exposed as first-class CLI flags.
 # These are declared as `option(...)` in `core/CMakeLists.txt`.
+# Single-argument semantics:
+# - Defaults come from CMake when flag is omitted.
+# - WS2812 is ON by default -> provide --no-ws2812 to disable.
+# - Other features are OFF by default -> provide --<feature> to enable.
 FEATURE_OPTIONS = [
+    {
+        "flag": "--no-ws2812",
+        "cmake_var": "ENABLE_WS2812",
+        "action": "store_false",
+        "help": "Disable WS2812 LED support (CMake: ENABLE_WS2812).",
+    },
     {
         "flag": "--usb-midi",
         "cmake_var": "ENABLE_USB_MIDI",
+        "action": "store_true",
         "help": "Enable USB MIDI support (CMake: ENABLE_USB_MIDI).",
-    },
-    {
-        "flag": "--ws2812",
-        "cmake_var": "ENABLE_WS2812",
-        "help": "Enable WS2812 LED support (CMake: ENABLE_WS2812).",
     },
     {
         "flag": "--oled",
         "cmake_var": "ENABLE_OLED",
+        "action": "store_true",
         "help": "Enable SSD1306 OLED support (CMake: ENABLE_OLED).",
+    },
+    {
+        "flag": "--mpr121",
+        "cmake_var": "ENABLE_MPR121",
+        "action": "store_true",
+        "help": "Enable MPR121 capacitive touch support (CMake: ENABLE_MPR121).",
     },
     {
         "flag": "--i2c-dma",
         "cmake_var": "ENABLE_I2C_DMA",
+        "action": "store_true",
         "help": "Enable non-blocking I2C TX via DMA helper (CMake: ENABLE_I2C_DMA).",
     },
 ]
@@ -526,6 +540,94 @@ def resolve_host_compilers(logger: logging.Logger) -> Tuple[Optional[str], Optio
     return None, None
 
 
+def _exe_suffix() -> str:
+    return ".exe" if os.name == "nt" else ""
+
+
+def _find_in_pico_toolchain_path(exe_stem: str, logger: logging.Logger) -> Optional[str]:
+    """
+    Search for `exe_stem` under PICO_TOOLCHAIN_PATH.
+
+    Pico SDK expects PICO_TOOLCHAIN_PATH to point to the toolchain root and searches
+    `${PICO_TOOLCHAIN_PATH}/bin` for compilers.
+    """
+    pico_toolchain_path = os.environ.get("PICO_TOOLCHAIN_PATH", "").strip().strip('"')
+    if not pico_toolchain_path:
+        return None
+
+    toolchain_root = Path(pico_toolchain_path)
+    candidate = toolchain_root / "bin" / f"{exe_stem}{_exe_suffix()}"
+    if candidate.exists():
+        return str(candidate)
+
+    # Common mistake: set PICO_TOOLCHAIN_PATH to ".../bin" instead of the toolchain root.
+    candidate = toolchain_root / f"{exe_stem}{_exe_suffix()}"
+    if candidate.exists():
+        logger.warning(
+            "PICO_TOOLCHAIN_PATH looks like a bin directory; expected toolchain root (containing bin/). Value: %s",
+            toolchain_root,
+        )
+        return str(candidate)
+
+    return None
+
+
+def preflight_check_toolchains(logger: logging.Logger) -> bool:
+    """
+    Check for external toolchains that are not installed via requirements.txt.
+
+    - ARM cross compiler: required for firmware build (arm-none-eabi-*)
+    - Host C/C++ compiler: required to build Pico SDK host tools (e.g. pioasm)
+    """
+    ok = True
+
+    arm_gcc = shutil.which("arm-none-eabi-gcc") or _find_in_pico_toolchain_path(
+        "arm-none-eabi-gcc", logger
+    )
+    arm_gxx = shutil.which("arm-none-eabi-g++") or _find_in_pico_toolchain_path(
+        "arm-none-eabi-g++", logger
+    )
+
+    if arm_gcc:
+        logger.info("ARM GCC: %s", arm_gcc)
+    else:
+        logger.error("arm-none-eabi-gcc not found (required).")
+        ok = False
+
+    if arm_gxx:
+        logger.info("ARM G++: %s", arm_gxx)
+    else:
+        logger.error("arm-none-eabi-g++ not found (required).")
+        ok = False
+
+    if not ok:
+        logger.error("Install GNU Arm Embedded Toolchain and ensure it's in PATH, or set PICO_TOOLCHAIN_PATH.")
+
+    # Host compiler for Pico SDK tools (pioasm, etc.). The build prefers GCC if present;
+    # otherwise CMake will pick a suitable toolchain (e.g. clang++ or MSVC).
+    host_cc = shutil.which("gcc")
+    host_cxx = shutil.which("g++")
+    if host_cc and host_cxx:
+        logger.info("Host compiler (GCC): %s / %s", host_cc, host_cxx)
+    else:
+        detected_cxx = (
+            shutil.which("clang++")
+            or shutil.which("cl")
+            or shutil.which("g++")
+        )
+        if detected_cxx:
+            logger.info("Host C++ compiler (CMake default): %s", detected_cxx)
+        else:
+            logger.warning(
+                "Host C++ compiler not found on PATH (clang++/g++/cl). Pico SDK builds host tools (e.g. pioasm) during configure."
+            )
+            logger.warning(
+                "Install LLVM (clang) or Visual Studio Build Tools, or run from a Developer Command Prompt."
+            )
+
+    return ok
+
+
 def find_uf2_file(build_dir: Path) -> Optional[Path]:
     """Find UF2 output file with common naming patterns."""
     preferred = [
@@ -734,12 +836,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help_text = feature["help"]
         dest = cmake_var.lower()
 
-        # Python 3.9+ provides a nice standard way to support both
-        # `--foo` and `--no-foo` without defining two arguments.
+        # Single-argument flags: when omitted, defer to CMake defaults.
         feature_group.add_argument(
             flag,
             dest=dest,
-            action=argparse.BooleanOptionalAction,
+            action=feature["action"],
             default=None,
             help=help_text,
         )
@@ -835,6 +936,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             alt_build_dir,
         )
         firmware_build_dir = alt_build_dir
+
+    with log_step(logger, "Preflight: toolchains"):
+        if not preflight_check_toolchains(logger):
+            raise SystemExit(1)
 
     with log_step(logger, "Build firmware"):
         if not build_firmware(

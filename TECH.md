@@ -246,13 +246,14 @@ Multicore changes should be validated under worst-case load, not only idle condi
 - **CMake 3.13+**
 - **Ninja** build system (installed via pip)
 - **ARM GCC Toolchain** (arm-none-eabi-gcc 13.2+)
-- **Clang 18+** (for host tools compilation)
+- **Host C/C++ compiler** (Clang 18+ recommended; required for Pico SDK host tools like `pioasm`)
 
 ## Software Dependencies
 
 ### Python Packages
 - `hvcc>=0.15.0`: Pure Data to C/C++ compiler
 - `ninja>=1.13.0`: Build system
+- `cmake>=3.13.0`: CMake (installed via pip)
 
 ### SDK Components
 - **pico-sdk 2.2.0+**: Core SDK for RP2350
