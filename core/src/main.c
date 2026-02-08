@@ -211,12 +211,13 @@ static bool init_heavy_context(void) {
 }
 
 static void init_peripherals(HeavyContextInterface *ctx) {
+    (void) ctx;
 #ifdef ENABLE_USB_MIDI
     usb_midi_init();
 #endif
 
 #ifdef ENABLE_WS2812
-    (void) ws2812_init_with_hook(WS2812_PIN, WS2812_NUM_LEDS, ctx);
+    (void) ws2812_init_with_status_blink(WS2812_PIN, WS2812_NUM_LEDS);
 #endif
 
 #ifdef ENABLE_OLED
