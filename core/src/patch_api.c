@@ -19,7 +19,7 @@
 #include "dev/ws2812.h"
 #endif
 
-#include <string.h>
+#include <stdio.h>
 
 /* --- MIDI: __hv_* hashes and push helpers (canonical argv order per hvcc test_midi.cpp) --- */
 
@@ -92,6 +92,53 @@ bool patch_api_push_knob(uint8_t index, float value) {
     ensure_knob_hashes();
     if (index >= (unsigned) POTS_COUNT || index >= (unsigned) POTS_MAX) return false;
     return ctrl_push_hash_f(hash_knob[index], value);
+}
+
+/* --- Touch (touch1..touch12 + touchN_level) hashes; push by index from MPR121 driver. --- */
+
+#ifdef ENABLE_MPR121
+#define PATCH_API_TOUCH_NAME_BUF 24
+static uint32_t hash_touch[MPR121_NUM_ELECTRODES];
+static uint32_t hash_touch_level[MPR121_NUM_ELECTRODES];
+static bool touch_hashes_done;
+
+static void ensure_touch_hashes(void) {
+    if (touch_hashes_done) return;
+    for (uint8_t i = 0; i < (uint8_t) MPR121_NUM_ELECTRODES; i++) {
+        char name[PATCH_API_TOUCH_NAME_BUF];
+        (void) snprintf(name, sizeof(name), "touch%u", (unsigned) (i + 1u));
+        hash_touch[i] = (uint32_t) hv_stringToHash(name);
+        (void) snprintf(name, sizeof(name), "touch%u_level", (unsigned) (i + 1u));
+        hash_touch_level[i] = (uint32_t) hv_stringToHash(name);
+    }
+    touch_hashes_done = true;
+}
+#endif
+
+bool patch_api_push_touch(uint8_t index, bool touched) {
+#ifdef ENABLE_MPR121
+    ensure_touch_hashes();
+    if (index >= (uint8_t) MPR121_NUM_ELECTRODES) return false;
+    return ctrl_push_hash_f(hash_touch[index], touched ? 1.0f : 0.0f);
+#else
+    (void) index;
+    (void) touched;
+    return false;
+#endif
+}
+
+bool patch_api_push_touch_level(uint8_t index, float level) {
+#ifdef ENABLE_MPR121
+    ensure_touch_hashes();
+    if (index >= (uint8_t) MPR121_NUM_ELECTRODES) return false;
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+    return ctrl_push_hash_f(hash_touch_level[index], level);
+#else
+    (void) index;
+    (void) level;
+    return false;
+#endif
 }
 
 /* --- Send hook: single entry point; route by sendHash to handlers that only parse and enqueue --- */

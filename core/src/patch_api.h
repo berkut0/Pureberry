@@ -2,6 +2,7 @@
  * Patch API — contract between Pd patch and firmware.
  *
  * - MIDI: push to __hv_* receivers with canonical argument order (see hvcc test_midi.cpp).
+ * - Patch params: receiver naming/hashes for hw inputs (knob, touch, etc.) live here.
  * - Send hook: hv_setSendHook() is called exactly once from patch_api_init(ctx).
  *   No driver (ws2812, future i2c/encoders/display) must ever call hv_setSendHook().
  * - Command table: patch name -> message format -> queue/handler (e.g. set_led_color, set_led_index).
@@ -40,6 +41,12 @@ bool patch_api_push_polytouchin(uint8_t note, uint8_t pressure, uint8_t ch);
 
 /** Push potentiometer value to knob1..knob4 receiver by index (0..3). Use when POTS_BACKEND=ADC. */
 bool patch_api_push_knob(uint8_t index, float value);
+
+/** Push capacitive touch state to touch1..touch12 receiver by index (0-based). */
+bool patch_api_push_touch(uint8_t index, bool touched);
+
+/** Push capacitive touch level to touch1_level..touch12_level receiver by index (0-based). */
+bool patch_api_push_touch_level(uint8_t index, float level);
 
 #ifdef __cplusplus
 }

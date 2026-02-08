@@ -1,6 +1,6 @@
 /*
  * MPR121 capacitive touch driver (core0).
- * Uses pico-mpr121; pushes touch1..touch12 (@hv_param) via ctrl_queue.
+ * Uses pico-mpr121; pushes touch events via patch_api contract.
  */
 
 #ifdef ENABLE_MPR121
@@ -8,8 +8,7 @@
 #include "dev/mpr121_touch.h"
 #include "config.h"
 #include "drv/i2c_bus.h"
-#include "multicore_audio.h"
-#include "HvHeavy.h"
+#include "patch_api.h"
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
@@ -19,15 +18,9 @@
 
 #include <stdio.h>
 
-#define MPR121_TOUCH_NAMES MPR121_NUM_ELECTRODES
-#define MPR121_NAME_BUFFER_SIZE 16
-
 static mpr121_sensor_t g_sensor;
 static bool g_ready;
 static uint16_t g_last_touched;
-static uint32_t g_hash_touch[MPR121_TOUCH_NAMES];
-static uint32_t g_hash_touch_level[MPR121_TOUCH_NAMES];
-static bool g_hashes_done;
 
 static volatile bool g_irq_pending;
 
@@ -45,18 +38,6 @@ static void mpr121_raw_irq_handler(void) {
 
 static i2c_inst_t *mpr121_get_i2c(void) {
     return i2c_bus_get_inst((i2c_bus_id_t)MPR121_I2C_BUS_ID);
-}
-
-static void ensure_touch_hashes(void) {
-    if (g_hashes_done) return;
-    for (int i = 0; i < MPR121_TOUCH_NAMES; i++) {
-        char name[MPR121_NAME_BUFFER_SIZE];
-        snprintf(name, sizeof(name), "touch%u", (unsigned)(i + 1));
-        g_hash_touch[i] = (uint32_t) hv_stringToHash(name);
-        snprintf(name, sizeof(name), "touch%u_level", (unsigned)(i + 1));
-        g_hash_touch_level[i] = (uint32_t) hv_stringToHash(name);
-    }
-    g_hashes_done = true;
 }
 
 /** Probe I2C: try to read one byte from MPR121. Returns true if device ACKs. */
@@ -102,7 +83,6 @@ bool mpr121_touch_init(void) {
     mpr121_init(i2c, addr, &g_sensor);
     mpr121_set_thresholds((uint8_t)MPR121_TOUCH_THRESHOLD, (uint8_t)MPR121_RELEASE_THRESHOLD, &g_sensor);
 
-    ensure_touch_hashes();
     g_last_touched = 0;
     g_last_poll_ms = 0;
     g_ready = true;
@@ -120,7 +100,7 @@ static void mpr121_read_and_push(void) {
         bool now = (touched & mask) != 0;
         bool prev = (g_last_touched & mask) != 0;
         if (now != prev)
-            ctrl_push_hash_f(g_hash_touch[i], now ? 1.0f : 0.0f);
+            (void) patch_api_push_touch((uint8_t) i, now);
     }
     g_last_touched = touched;
 
@@ -130,7 +110,7 @@ static void mpr121_read_and_push(void) {
         mpr121_filtered_data((uint8_t)i, &raw, &g_sensor);
         float level = (float)raw / MPR121_FILTERED_DATA_MAX;
         if (level > 1.0f) level = 1.0f;
-        ctrl_push_hash_f(g_hash_touch_level[i], level);
+        (void) patch_api_push_touch_level((uint8_t) i, level);
     }
 }
 
