@@ -50,13 +50,6 @@
 #include "usb/usb_midi.h"
 #endif
 
-// USB initialization
-#define USB_INIT_ITERATIONS 100
-#define USB_INIT_DELAY_MS 1
-
-// Main loop
-#define MAIN_LOOP_SLEEP_US 100
-
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
 
@@ -74,6 +67,14 @@ static void init_usb_subsystem(void) {
     // Initialize USB CDC for printf
     usb_cdc_init();
 
+}
+
+static void service_usb(void) {
+    tud_task();
+    usb_cdc_task();
+#ifdef ENABLE_USB_MIDI
+    usb_midi_task();
+#endif
 }
 
 static bool init_heavy_context(void) {
@@ -108,6 +109,18 @@ static void init_peripherals(void) {
     (void) adc_pots_init();
 }
 
+static void service_peripherals(void) {
+    multicore_drain_led();
+    i2c_bus_poll();
+#ifdef ENABLE_MPR121
+    mpr121_touch_task();
+#endif
+#ifdef ENABLE_OLED
+    oled_task();
+#endif
+    adc_pots_task();
+}
+
 int main() {
     init_usb_subsystem();
     (void) audio_runtime_init_output();
@@ -120,20 +133,8 @@ int main() {
     audio_runtime_start(heavy_context);
 
     while (true) {
-        tud_task();
-        usb_cdc_task();
-#ifdef ENABLE_USB_MIDI
-        usb_midi_task();
-#endif
-        multicore_drain_led();
-        i2c_bus_poll();
-#ifdef ENABLE_MPR121
-        mpr121_touch_task();
-#endif
-#ifdef ENABLE_OLED
-        oled_task();
-#endif
-        adc_pots_task();
+        service_usb();
+        service_peripherals();
         sleep_us(MAIN_LOOP_SLEEP_US);
     }
 

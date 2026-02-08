@@ -28,6 +28,19 @@
 
 #endif
 
+// USB bring-up / main-loop timing
+#ifndef USB_INIT_ITERATIONS
+#define USB_INIT_ITERATIONS 100
+#endif
+
+#ifndef USB_INIT_DELAY_MS
+#define USB_INIT_DELAY_MS 1
+#endif
+
+#ifndef MAIN_LOOP_SLEEP_US
+#define MAIN_LOOP_SLEEP_US 100
+#endif
+
 // I2S (pico-extras / PICO_AUDIO_I2S_*)
 // Clock pins are consecutive; order is controlled by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED.
 // Defaults free GPIO 26-29 for ADC potentiometers.

@@ -4,9 +4,10 @@
 # This can be dropped into an external project to help locate this SDK
 # It should be include()ed prior to project()
 
-# First, check for local SDK submodule (relative to this file's location)
+# First, check for local SDK submodule (relative to this file's location).
+# This file lives in core/, so repo root is core/..
 get_filename_component(CMAKE_CURRENT_LIST_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-get_filename_component(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+get_filename_component(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(LOCAL_SDK_PATH "${PROJECT_ROOT_DIR}/sdk/pico-sdk")
 
 if (NOT PICO_SDK_PATH AND EXISTS "${LOCAL_SDK_PATH}/pico_sdk_init.cmake")

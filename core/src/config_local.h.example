@@ -35,6 +35,11 @@
 // #define POTS_EPS 0.005f
 // #define POTS_ALPHA 0.25f
 
+// USB bring-up / main-loop timing (optional overrides).
+// #define USB_INIT_ITERATIONS 100
+// #define USB_INIT_DELAY_MS 1
+// #define MAIN_LOOP_SLEEP_US 100
+
 // SSD1306 OLED (u8g2) over I2C (optional)
 //
 // I2C bus configuration:
