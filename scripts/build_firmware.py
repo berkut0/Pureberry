@@ -811,14 +811,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--clean",
         action="store_true",
-        default=True,
-        help="Clean build directory before building (default: True)",
+        default=False,
+        help="Clean build directory before building (default: False)",
     )
     parser.add_argument(
         "--no-clean",
         dest="clean",
         action="store_false",
-        help="Don't clean build directory before building",
+        help="Don't clean build directory before building (default)",
     )
     parser.add_argument(
         "-D",
