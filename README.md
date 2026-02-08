@@ -77,10 +77,6 @@ The build script supports multiple verbosity levels:
 
 Build log is saved to `build/<patch>/build_firmware.log` (full subprocess output in verbose/debug modes; script messages only in normal/quiet).
 
-### Windows USB note (CDC / COM port)
-
-As of 2026-02-07 the firmware uses TinyUSB for USB in all builds (CDC always; MIDI optional). If Windows still shows a broken device (e.g. **Code 10**) or no COM port is created, see `docs/USB_DEBUG.md` for current observations and workarounds.
-
 ## Configuration
 
 ### I2S Pin Configuration

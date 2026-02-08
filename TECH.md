@@ -100,6 +100,30 @@ You can always pass explicit CMake defines:
 python scripts/build_firmware.py patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
 ```
 
+### USB Stack Contract (Current)
+
+USB is unified and must stay this way:
+
+- The firmware always uses TinyUSB device stack (`tinyusb_device`, `tinyusb_board`).
+- `pico_stdio_usb` is not used by firmware targets.
+- CDC is always enabled (`CFG_TUD_CDC=1`).
+- `ENABLE_USB_MIDI` only toggles MIDI class (`CFG_TUD_MIDI`) and descriptor shape (CDC-only vs CDC+MIDI).
+
+Runtime rules:
+
+- USB stack servicing (`tud_task()`) runs continuously on core0 in the main loop.
+- `usb_cdc_task()` runs on core0 in all builds.
+- `usb_midi_task()` runs on core0 only when `ENABLE_USB_MIDI=ON`.
+- TinyUSB callbacks must remain lightweight and non-blocking (no heavy I/O).
+
+Implementation map:
+
+- Build wiring: `core/CMakeLists.txt`
+- TinyUSB config: `core/src/tusb_config.h`
+- USB descriptors: `core/src/usb/usb_descriptors.c`
+- CDC stdio bridge: `core/src/usb/usb_cdc.c`
+- MIDI ingress: `core/src/usb/usb_midi.c`
+
 ### Logging System
 
 The build script provides a unified logging system with multiple verbosity levels:
@@ -159,7 +183,7 @@ The firmware uses strict multicore separation: audio runs on **core1** only; **c
 - **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `ctrl_push_hash_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
 - **led_queue (core1 → core0)**: Pd send-hook commands (set_led_color, set_led_index). The send hook runs in the Heavy/audio context and **only parses and enqueues**; core0 drains in the main loop and performs the actual work (I2C, GPIO, display). Overflow policy: drop newest.
 
-DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. For the full set of architectural rules (who may call Heavy, what is allowed on each core), see the plan’s **Invariants** section.
+DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. The full architectural rules are defined in the "Strict Multicore Rules" section below.
 
 #### Strict Multicore Rules (Must Always Hold)
 
