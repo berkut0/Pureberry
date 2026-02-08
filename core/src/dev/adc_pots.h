@@ -1,7 +1,7 @@
 /**
  * ADC potentiometers driver (knob1..knob4).
  * Config: first channel POTS_ADC_FIRST_CHANNEL, count POTS_COUNT; pins from SDK (ADC_BASE_PIN + channel).
- * Normalizes to 0..1. No hv_setSendHook; push is done by patch_api from main loop.
+ * Normalizes to 0..1. No hv_setSendHook; this module pushes knob values via patch_api.
  */
 
 #ifndef ADC_POTS_H
@@ -23,8 +23,15 @@ extern "C" {
 bool adc_pots_init(void);
 
 /**
- * Read all pot channels: apply 1-pole filter and write normalized [0, 1] to out.
- * n must be <= POTS_COUNT. No rate limiting or deadband here (done in main loop).
+ * Poll potentiometers and push changed values to knob1..knob4 via patch_api.
+ * Applies POTS_POLL_MS interval, POTS_EPS deadband and retry-on-queue-overflow behavior.
+ * Safe to call each main-loop iteration.
+ */
+void adc_pots_task(void);
+
+/**
+ * Read pot channels: apply 1-pole filter and write normalized [0, 1] to out.
+ * n must be <= POTS_COUNT.
  */
 void adc_pots_read(float *out, unsigned n);
 

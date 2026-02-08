@@ -7,16 +7,23 @@
 #include <stdio.h>
 #include "adc_pots.h"
 #include "config.h"
+#include "patch_api.h"
 #include "hardware/adc.h"
+#include "pico/time.h"
 
 #if (POTS_BACKEND == POTS_BACKEND_ADC)
 
 #define ADC_MAX_RAW 4095.f
 
 static float v_filtered[POTS_MAX];
+static float pots_last_sent[POTS_MAX];
+static uint32_t pots_last_poll_ms;
 static bool initialized;
+static bool enabled;
 
 bool adc_pots_init(void) {
+    enabled = false;
+    initialized = false;
     if (POTS_COUNT == 0) return true;
     unsigned first = (unsigned)POTS_ADC_FIRST_CHANNEL;
     unsigned count = (unsigned)POTS_COUNT;
@@ -32,8 +39,11 @@ bool adc_pots_init(void) {
         uint gpio = ADC_BASE_PIN + ch;
         adc_gpio_init(gpio);
         v_filtered[i] = 0.f;
+        pots_last_sent[i] = -1.f;
     }
+    pots_last_poll_ms = 0;
     initialized = true;
+    enabled = true;
     return true;
 }
 
@@ -56,11 +66,36 @@ void adc_pots_read(float *out, unsigned n) {
     }
 }
 
+void adc_pots_task(void) {
+    if (!enabled) return;
+
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (now - pots_last_poll_ms < (uint32_t)POTS_POLL_MS) return;
+    pots_last_poll_ms = now;
+
+    float values[POTS_MAX];
+    adc_pots_read(values, (unsigned)POTS_COUNT);
+    if (!initialized) return;
+
+    for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
+        float diff = values[i] - pots_last_sent[i];
+        if (pots_last_sent[i] < 0.f || (diff > POTS_EPS || -diff > POTS_EPS)) {
+            if (patch_api_push_knob((uint8_t)i, values[i]))
+                pots_last_sent[i] = values[i];
+            /* On ctrl_queue overflow (false): skip updating last_sent so the next poll may retry. */
+        }
+    }
+}
+
 #else
 
 bool adc_pots_init(void) {
     (void)0;
     return true;
+}
+
+void adc_pots_task(void) {
+    (void)0;
 }
 
 void adc_pots_read(float *out, unsigned n) {

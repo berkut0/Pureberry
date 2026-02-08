@@ -34,10 +34,8 @@
 #include "dev/ws2812.h"
 #endif
 
-// Potentiometers (knob1..knob4) when POTS_BACKEND=ADC
-#if (POTS_BACKEND == POTS_BACKEND_ADC)
+// Potentiometers (knob1..knob4)
 #include "dev/adc_pots.h"
-#endif
 
 // Optional SSD1306 OLED (I2C) support
 #ifdef ENABLE_OLED
@@ -101,12 +99,6 @@ static audio_buffer_pool_t *audio_pool = NULL;
 
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
-
-#if (POTS_BACKEND == POTS_BACKEND_ADC)
-static float pots_last_sent[POTS_MAX];
-static uint32_t pots_last_poll_ms;
-#endif
-
 
 /**
  * Convert float samples (-1.0 to 1.0) to 16-bit integer
@@ -228,37 +220,7 @@ static void init_peripherals(HeavyContextInterface *ctx) {
     (void) mpr121_touch_init();
 #endif
 
-#if (POTS_BACKEND == POTS_BACKEND_ADC)
-    if (POTS_COUNT > 0) {
-        if (adc_pots_init()) {
-            for (int i = 0; i < POTS_MAX && i < POTS_COUNT; i++) {
-                pots_last_sent[i] = -1.f;
-            }
-            pots_last_poll_ms = 0;
-        }
-    }
-#endif
-}
-
-static void poll_adc_pots(void) {
-#if (POTS_BACKEND == POTS_BACKEND_ADC)
-    if (POTS_COUNT > 0) {
-        uint32_t now = to_ms_since_boot(get_absolute_time());
-        if (now - pots_last_poll_ms >= (uint32_t)POTS_POLL_MS) {
-            pots_last_poll_ms = now;
-            float v[POTS_MAX];
-            adc_pots_read(v, (unsigned)POTS_COUNT);
-            for (unsigned i = 0; i < (unsigned)POTS_COUNT && i < (unsigned)POTS_MAX; i++) {
-                float diff = v[i] - pots_last_sent[i];
-                if (pots_last_sent[i] < 0.f || (diff > POTS_EPS || -diff > POTS_EPS)) {
-                    if (patch_api_push_knob((uint8_t)i, v[i]))
-                        pots_last_sent[i] = v[i];
-                    /* On ctrl_queue overflow (false): skip updating last_sent so the next poll may retry. */
-                }
-            }
-        }
-    }
-#endif
+    (void) adc_pots_init();
 }
 
 int main() {
@@ -287,7 +249,7 @@ int main() {
 #ifdef ENABLE_OLED
         oled_task();
 #endif
-        poll_adc_pots();
+        adc_pots_task();
         sleep_us(MAIN_LOOP_SLEEP_US);
     }
 
