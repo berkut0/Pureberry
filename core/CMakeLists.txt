@@ -81,6 +81,7 @@ endif()
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
+    src/audio_runtime.c
     src/multicore_audio.c
     src/patch_api.c
     src/drv/i2c_bus.c

@@ -5,18 +5,12 @@
  */
 
 #include <stdio.h>
-#include <string.h>
-#include <math.h>
 #include "pico/stdlib.h"
-#include "pico/sync.h"
 #include "pico/time.h"
-#include "pico/multicore.h"
-#include "pico/audio.h"
-#include "pico/audio_i2s.h"
-#include "hardware/gpio.h"
 
 // Firmware configuration
 #include "config.h"
+#include "audio_runtime.h"
 #include "multicore_audio.h"
 #include "drv/i2c_bus.h"
 
@@ -40,7 +34,6 @@
 // Optional SSD1306 OLED (I2C) support
 #ifdef ENABLE_OLED
 #include "dev/oled.h"
-#include "multicore_display.h"
 #endif
 
 // Optional MPR121 capacitive touch (I2C, touch1..touch12 @hv_param)
@@ -57,12 +50,6 @@
 #include "usb/usb_midi.h"
 #endif
 
-// Audio configuration
-#define SAMPLE_RATE 48000
-#define AUDIO_BLOCK_SIZE 64  // Heavy default block size
-#define AUDIO_BUFFER_SIZE (AUDIO_BLOCK_SIZE * 2)  // Stereo
-#define INT16_MAX_VALUE 32767.0f
-
 // USB initialization
 #define USB_INIT_ITERATIONS 100
 #define USB_INIT_DELAY_MS 1
@@ -70,85 +57,8 @@
 // Main loop
 #define MAIN_LOOP_SLEEP_US 100
 
-// I2S pin configuration (config.h / config_local.h)
-// DIN = PICO_AUDIO_I2S_DATA_PIN; clocks = PICO_AUDIO_I2S_CLOCK_PIN_BASE, base+1 (order by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED).
-
-// Audio format
-static const audio_format_t audio_format = {
-    .sample_freq = SAMPLE_RATE,
-    .format = AUDIO_BUFFER_FORMAT_PCM_S16,  // 16-bit signed PCM
-    .channel_count = 2  // Stereo
-};
-
-// Audio buffer format (needed for buffer pool creation)
-static audio_buffer_format_t audio_buffer_format = {
-    .format = &audio_format,
-    .sample_stride = 4  // 2 bytes per sample * 2 channels = 4 bytes per frame
-};
-
-// I2S configuration
-static const audio_i2s_config_t i2s_config = {
-    .data_pin = PICO_AUDIO_I2S_DATA_PIN,
-    .clock_pin_base = PICO_AUDIO_I2S_CLOCK_PIN_BASE,
-    .dma_channel = 0,  // Will be assigned automatically
-    .pio_sm = 0  // PIO state machine 0
-};
-
-// Audio buffer pool for output
-static audio_buffer_pool_t *audio_pool = NULL;
-
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
-
-/**
- * Convert float samples (-1.0 to 1.0) to 16-bit integer
- */
-static void float_to_int16(const float *in, int16_t *out, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        float sample = in[i];
-        // Clamp to [-1.0, 1.0]
-        if (sample > 1.0f) sample = 1.0f;
-        if (sample < -1.0f) sample = -1.0f;
-        out[i] = (int16_t)(sample * INT16_MAX_VALUE);
-    }
-}
-
-/**
- * Audio core (core1) entry: drain ctrl queue, then produce one buffer via Heavy.
- * Invariant: no sleep, printf, I/O; only ctrl_queue drain, Heavy, buffer pool.
- */
-static void audio_core_main(void) {
-    static float audio_out_buffer[AUDIO_BUFFER_SIZE];
-    while (true) {
-        if (audio_pool == NULL || heavy_context == NULL) {
-            continue;
-        }
-        multicore_drain_ctrl(heavy_context);
-        audio_buffer_t *buffer = take_audio_buffer(audio_pool, true);
-        if (buffer == NULL) {
-            continue;
-        }
-        int16_t *samples = (int16_t *)buffer->buffer->bytes;
-        size_t samples_per_channel = buffer->max_sample_count;
-        size_t blocks_to_process = (samples_per_channel + AUDIO_BLOCK_SIZE - 1) / AUDIO_BLOCK_SIZE;
-        for (size_t block = 0; block < blocks_to_process; block++) {
-            size_t block_size = AUDIO_BLOCK_SIZE;
-            if (block == blocks_to_process - 1) {
-                block_size = samples_per_channel - (block * AUDIO_BLOCK_SIZE);
-            }
-            hv_processInlineInterleaved(heavy_context, NULL, audio_out_buffer, block_size);
-#ifdef ENABLE_OLED
-            // Publish a downsampled waveform for the OLED (core1 only; no I/O).
-            multicore_display_capture_interleaved(audio_out_buffer, block_size);
-#endif
-            float_to_int16(audio_out_buffer,
-                           samples + (block * AUDIO_BLOCK_SIZE * 2),
-                           block_size * 2);
-        }
-        buffer->sample_count = samples_per_channel;
-        give_audio_buffer(audio_pool, buffer);
-    }
-}
 
 static void init_usb_subsystem(void) {
     // TinyUSB initialization (CDC always; MIDI optional)
@@ -166,34 +76,10 @@ static void init_usb_subsystem(void) {
 
 }
 
-static void init_audio_subsystem(void) {
-    // Setup I2S audio output
-    const audio_format_t *output_format = audio_i2s_setup(&audio_format, &i2s_config);
-    if (output_format == NULL) {
-        // Don't return -1, continue to main loop for debugging
-        return;
-    }
-
-    // No special I2S GPIO configuration required for this use case.
-    // Create audio buffer pool for output (only if I2S setup succeeded)
-    audio_pool = audio_new_producer_pool(&audio_buffer_format, 3, AUDIO_BLOCK_SIZE);
-    if (audio_pool == NULL) {
-        return;
-    }
-
-    // Connect audio producer to I2S output
-    if (!audio_i2s_connect(audio_pool)) {
-        return;
-    }
-
-    // Enable I2S audio output
-    audio_i2s_set_enabled(true);
-}
-
 static bool init_heavy_context(void) {
     // Initialize Heavy context
     // Note: Function name is always hv_patch_new() since we use "patch" as project name
-    heavy_context = hv_patch_new((double)SAMPLE_RATE);
+    heavy_context = hv_patch_new((double) audio_runtime_sample_rate());
     if (heavy_context == NULL) {
         return false;
     }
@@ -202,8 +88,7 @@ static bool init_heavy_context(void) {
     return true;
 }
 
-static void init_peripherals(HeavyContextInterface *ctx) {
-    (void) ctx;
+static void init_peripherals(void) {
 #ifdef ENABLE_USB_MIDI
     usb_midi_init();
 #endif
@@ -225,15 +110,14 @@ static void init_peripherals(HeavyContextInterface *ctx) {
 
 int main() {
     init_usb_subsystem();
-    init_audio_subsystem();
+    (void) audio_runtime_init_output();
     multicore_audio_init();
     if (!init_heavy_context()) {
         return -1;
     }
-    init_peripherals(heavy_context);
+    init_peripherals();
 
-    __sync_synchronize();
-    multicore_launch_core1(audio_core_main);
+    audio_runtime_start(heavy_context);
 
     while (true) {
         tud_task();
