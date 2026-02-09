@@ -32,6 +32,7 @@ typedef struct {
 void crosscore_bus_init(void);
 
 /** Push control events from core0 by Heavy receiver hash. On overflow: drop newest. */
+bool crosscore_bus_ctrl_try_push_b(uint32_t receiver_hash);
 bool crosscore_bus_ctrl_try_push_f(uint32_t receiver_hash, float a);
 bool crosscore_bus_ctrl_try_push_ff(uint32_t receiver_hash, float a, float b);
 bool crosscore_bus_ctrl_try_push_fff(uint32_t receiver_hash, float a, float b, float c);

@@ -49,6 +49,18 @@ bool patch_api_get_in_param(uint16_t index, patch_api_in_param_t *out);
 /** Find IN param metadata by canonical name. Returns false when absent. */
 bool patch_api_find_in_param(const char *name, patch_api_in_param_t *out);
 
+/**
+ * Generic Patch IN push API for external producers (UI/UART/CDC/etc.).
+ *
+ * - by_name variants validate parameter type against registry.
+ * - float variants clamp to declared min/max when metadata is available.
+ * - bang variants are for event inputs only.
+ */
+bool patch_api_push_in_float_by_name(const char *name, float value);
+bool patch_api_push_in_float_by_hash(uint32_t hash, float value);
+bool patch_api_push_in_bang_by_name(const char *name);
+bool patch_api_push_in_bang_by_hash(uint32_t hash);
+
 /** MIDI: push to __hv_notein. Args: pitch, velocity, channel (0..15). */
 bool patch_api_push_notein(uint8_t note, uint8_t vel, uint8_t ch);
 /** MIDI: push to __hv_ctlin. Args in message: (value, cc, channel0). */

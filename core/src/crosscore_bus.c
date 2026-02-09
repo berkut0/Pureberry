@@ -51,6 +51,15 @@ bool crosscore_bus_ctrl_try_push_f(uint32_t receiver_hash, float a) {
     return queue_try_add(&g_ctrl_queue, &ev);
 }
 
+bool crosscore_bus_ctrl_try_push_b(uint32_t receiver_hash) {
+    crosscore_ctrl_event_t ev = {
+        .receiver_hash = receiver_hash,
+        .argc = 0,
+        .argv = {0.0f, 0.0f, 0.0f}
+    };
+    return queue_try_add(&g_ctrl_queue, &ev);
+}
+
 bool crosscore_bus_ctrl_try_push_ff(uint32_t receiver_hash, float a, float b) {
     crosscore_ctrl_event_t ev = {
         .receiver_hash = receiver_hash,

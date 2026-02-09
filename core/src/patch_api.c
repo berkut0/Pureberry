@@ -23,6 +23,7 @@ typedef enum {
     CTRL_SRC_USB_MIDI = 0,
     CTRL_SRC_ADC_POTS = 1,
     CTRL_SRC_MPR121 = 2,
+    CTRL_SRC_GENERIC = 3,
 } ctrl_push_source_t;
 
 static patch_api_transport_stats_t g_transport_stats;
@@ -134,6 +135,23 @@ static bool find_in_param_hash_by_name(const char *name, uint32_t *out_hash) {
     return true;
 }
 
+static int find_in_param_index_by_hash(uint32_t hash) {
+    if (hash == 0u) return -1;
+    for (uint16_t i = 0; i < g_in_param_count; i++) {
+        if (g_in_params[i].hash == hash) return (int) i;
+    }
+    return -1;
+}
+
+static float clamp_float_to_param_range(const patch_api_in_param_slot_t *slot, float value) {
+    if (!slot) return value;
+    if (slot->type != PATCH_API_IN_PARAM_FLOAT) return value;
+    if (slot->max_value < slot->min_value) return value;
+    if (value < slot->min_value) return slot->min_value;
+    if (value > slot->max_value) return slot->max_value;
+    return value;
+}
+
 static void build_in_param_registry(HeavyContextInterface *ctx) {
     g_in_param_count = 0;
     if (!ctx) return;
@@ -198,6 +216,52 @@ bool patch_api_find_in_param(const char *name, patch_api_in_param_t *out) {
     int index = find_in_param_index_by_name(name);
     if (index < 0) return false;
     return patch_api_get_in_param((uint16_t) index, out);
+}
+
+bool patch_api_push_in_float_by_name(const char *name, float value) {
+    int index = find_in_param_index_by_name(name);
+    if (index < 0) return false;
+    const patch_api_in_param_slot_t *slot = &g_in_params[index];
+    if (slot->type != PATCH_API_IN_PARAM_FLOAT) return false;
+
+    float clamped = clamp_float_to_param_range(slot, value);
+    bool ok = crosscore_bus_ctrl_try_push_f(slot->hash, clamped);
+    record_ctrl_push(ok, CTRL_SRC_GENERIC);
+    return ok;
+}
+
+bool patch_api_push_in_float_by_hash(uint32_t hash, float value) {
+    int index = find_in_param_index_by_hash(hash);
+    if (index < 0) return false;
+    const patch_api_in_param_slot_t *slot = &g_in_params[index];
+    if (slot->type != PATCH_API_IN_PARAM_FLOAT) return false;
+
+    float clamped = clamp_float_to_param_range(slot, value);
+    bool ok = crosscore_bus_ctrl_try_push_f(slot->hash, clamped);
+    record_ctrl_push(ok, CTRL_SRC_GENERIC);
+    return ok;
+}
+
+bool patch_api_push_in_bang_by_name(const char *name) {
+    int index = find_in_param_index_by_name(name);
+    if (index < 0) return false;
+    const patch_api_in_param_slot_t *slot = &g_in_params[index];
+    if (slot->type != PATCH_API_IN_PARAM_EVENT) return false;
+
+    bool ok = crosscore_bus_ctrl_try_push_b(slot->hash);
+    record_ctrl_push(ok, CTRL_SRC_GENERIC);
+    return ok;
+}
+
+bool patch_api_push_in_bang_by_hash(uint32_t hash) {
+    int index = find_in_param_index_by_hash(hash);
+    if (index < 0) return false;
+    const patch_api_in_param_slot_t *slot = &g_in_params[index];
+    if (slot->type != PATCH_API_IN_PARAM_EVENT) return false;
+
+    bool ok = crosscore_bus_ctrl_try_push_b(slot->hash);
+    record_ctrl_push(ok, CTRL_SRC_GENERIC);
+    return ok;
 }
 
 /* --- MIDI: __hv_* hashes and push helpers (canonical argv order per hvcc test_midi.cpp) --- */
