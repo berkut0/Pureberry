@@ -2,7 +2,7 @@
  * Audio runtime (I2S output + core1 DSP loop).
  *
  * Owns audio device setup, core1 render loop and float->PCM conversion.
- * Control event transport stays in multicore_audio.* (queues/drain only).
+ * Control event transport stays in crosscore_bus.* (queues/drain only).
  */
 
 #ifndef AUDIO_RUNTIME_H

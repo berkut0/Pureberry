@@ -4,9 +4,9 @@
  * C implementation with C-compatible API.
  * Uses PIO state machine for precise timing required by WS2812 protocol.
  *
- * This driver never calls hv_setSendHook(). Patch API (patch_api.c) owns the single
- * send hook and routes set_led_color / set_led_index into led_queue; core0 drains
- * led_queue and calls ws2812_set_* from multicore_drain_led().
+ * This driver provides init, set_color, set_all, update, get_num_leds only.
+ * It does not depend on cross-core transport; application code (e.g. main.c)
+ * consumes LED commands from the bus and calls this API.
  */
 
 #ifdef ENABLE_WS2812

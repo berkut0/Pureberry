@@ -178,10 +178,10 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 ### Multicore
 
-The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via two queues (see `core/src/multicore_audio.h`):
+The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via `core/src/crosscore_bus.h`:
 
-- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `ctrl_push_hash_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
-- **led_queue (core1 → core0)**: Pd send-hook commands (set_led_color, set_led_index). The send hook runs in the Heavy/audio context and **only parses and enqueues**; core0 drains in the main loop and performs the actual work (I2C, GPIO, display). Overflow policy: drop newest.
+- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `crosscore_bus_ctrl_try_push_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
+- **led_mailbox (core1 → core0)**: Pd send-hook LED color state (`set_led_color`). The send hook runs in the Heavy/audio context and only parses/publishes latest color; core0 consumes latest state in the main loop and performs the hardware update.
 
 DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. The full architectural rules are defined in the "Strict Multicore Rules" section below.
 
@@ -191,7 +191,7 @@ These rules define the architecture contracts that must be maintained for correc
 
 1. **Heavy context ownership**: Only **core1** may call any Heavy API functions:
    - `hv_process*()` / `hv_processInlineInterleaved()` - audio processing
-   - `hv_sendMessageToReceiver*()` - control message injection (called via `multicore_drain_ctrl()`)
+   - `hv_sendMessageToReceiver*()` - control message injection (called via `crosscore_bus_ctrl_drain_to_heavy()`)
    - `hv_patch_new()` / `hv_patch_free()` - context lifecycle
    - **core0 must never call Heavy APIs directly**
 
@@ -202,18 +202,18 @@ These rules define the architecture contracts that must be maintained for correc
    - No dynamic memory allocation (`malloc`/`free`)
    - No long critical sections or spinlocks (except audio buffer pool, which is designed for cross-core use)
 
-3. **Send hook execution context**: The send hook runs in the Heavy/audio context (RT). **Single entry point**: `hv_setSendHook()` is called in exactly one place — `patch_api_init(ctx)` in `patch_api.c`. No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. The hook must be RT-safe: only minimal parsing and enqueue into one or more queues (led_queue, future cmd_queue). Core0 in the main loop drains these queues and performs the real work (I2C, GPIO, display). Do not call `ws2812_set_*()` or other hardware drivers directly from the send hook.
+3. **Send hook execution context**: The send hook runs in the Heavy/audio context (RT). **Single entry point**: `hv_setSendHook()` is called in exactly one place — `patch_api_init(ctx)` in `patch_api.c`. No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. The hook must be RT-safe: only minimal parsing and transport publish (currently: LED mailbox). Core0 in the main loop consumes transport state and performs the real work (I2C, GPIO, display). Do not call `ws2812_set_*()` or other hardware drivers directly from the send hook.
 
 4. **I/O core (core0) responsibilities**: core0 handles all non-audio work:
    - USB stack servicing (`tud_task()`)
    - MIDI packet processing (pushes to `ctrl_queue`)
-   - Peripheral control (WS2812 LED updates via `multicore_drain_led()`)
+   - Peripheral control (WS2812 LED updates via mailbox consume + `ws2812_set_all()`)
    - Initialization (clocks, audio pool, Heavy context creation before launching core1)
 
-5. **Queue semantics**:
+5. **Transport semantics**:
    - `ctrl_queue`: core0 pushes, core1 drains once per audio buffer (before `hv_process*()`)
-   - `led_queue`: core1 send hooks push, core0 drains in main loop
-   - Overflow policy: **drop newest** (implemented in `multicore_audio.c`)
+   - `led_mailbox`: core1 send hooks publish latest color, core0 consumes latest state in main loop
+   - Overflow policy: **drop newest** applies to `ctrl_queue` only (`crosscore_bus.c`)
 
 #### I2C Bus Architecture
 
@@ -231,12 +231,14 @@ The core0 main loop calls `i2c_bus_poll()` to progress DMA transactions. Leaf dr
 
 #### Failure Modes & Backpressure
 
-**Queue overflow**: When queues are full, new events are dropped (newest dropped policy). This is expected behavior under high event rates:
+**Transport pressure**:
+- `ctrl_queue` can overflow; new events are dropped (newest dropped policy).
+- `led_mailbox` does not queue history; newest state overwrites older state.
 
 - **ctrl_queue overflow**: MIDI events may be lost during bursts. Mitigation: rate-limit or coalesce continuous controls (CC) on core0 before pushing.
-- **led_queue overflow**: LED updates may be skipped. This is acceptable for visual feedback; audio processing continues unaffected.
+- **led_mailbox latest-wins**: intermediate LED colors may be skipped during bursts. This is expected and acceptable for visual feedback.
 
-**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_hash_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
+**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `crosscore_bus_ctrl_try_push_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
 
 **Recommendations**:
 - For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`. Potentiometers (knob1..knob4) are configured by **ADC channel** (first channel **POTS_ADC_FIRST_CHANNEL**, count **POTS_COUNT**); physical pins come from the SDK (chip-dependent). They are only pushed when **POTS_BACKEND** is ADC and **POTS_COUNT** > 0; values are sent only on change (poll interval **POTS_POLL_MS**, deadband **POTS_EPS**, 1-pole smoothing **POTS_ALPHA**). Otherwise those receivers receive no values.

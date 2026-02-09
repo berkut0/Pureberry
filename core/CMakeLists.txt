@@ -82,7 +82,7 @@ endif()
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
     src/audio_runtime.c
-    src/multicore_audio.c
+    src/crosscore_bus.c
     src/patch_api.c
     src/drv/i2c_bus.c
     src/drv/spi_bus.c

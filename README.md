@@ -141,16 +141,15 @@ Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `
 - **Two classes of inputs**:
   - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.
   - **Event/packet** ("button pressed", "I2C packet", "encoder +N") → use ordinary receivers/messages (not necessarily @hv_param) if it is not a UI parameter.
-- **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → queue) is in `patch_api.c`.
+- **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → handler) is in `patch_api.c`.
 
 ### Send commands (LED)
 
 Official API for LED control from the patch:
 
 - **set_led_color** `(r g b)` — three floats (0–1 or 0–255). Sets all LEDs.
-- **set_led_index** `(idx r g b)` — index plus three floats. Sets one LED.
 
-These are the only supported send commands for LED; the table is extended in `patch_api.c` for future commands.
+This is the only supported LED send command in firmware.
 
 ---
 
@@ -160,9 +159,9 @@ The firmware uses **strict multicore separation**:
 - **Core1 (audio core)**: Runs Heavy DSP processing (`hv_process*()`), owns the Heavy context, handles audio buffer production. No blocking I/O, no USB tasks, no `printf`.
 - **Core0 (I/O core)**: Handles initialization, USB/MIDI, peripherals (WS2812 LEDs), and drains control queues.
 
-Communication between cores uses two queues:
-- `ctrl_queue` (core0 → core1): MIDI and control events (pushed via `patch_api_push_*` or `ctrl_push_hash_*`)
-- `led_queue` (core1 → core0): LED commands from the patch send hook (routed in `patch_api.c`); core0 drains and calls `ws2812_*`
+Communication between cores uses:
+- `ctrl_queue` (core0 → core1): MIDI/control events (pushed via `patch_api_push_*` / `crosscore_bus_ctrl_try_push_*`)
+- `led_mailbox` (core1 → core0): latest LED color published by patch send hook; core0 consumes latest state and applies `ws2812_set_all(...)`
 
 For complete architecture details, strict multicore rules, failure modes, and validation guidance, see [TECH.md](TECH.md).
 

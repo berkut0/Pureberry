@@ -5,7 +5,7 @@
 #include "audio_runtime.h"
 
 #include "config.h"
-#include "multicore_audio.h"
+#include "crosscore_bus.h"
 #include "HvHeavy.h"
 
 #ifdef ENABLE_OLED
@@ -58,7 +58,7 @@ static void audio_core1_main(void) {
         if (audio_pool == NULL || runtime_context == NULL) {
             continue;
         }
-        multicore_drain_ctrl(runtime_context);
+        crosscore_bus_ctrl_drain_to_heavy(runtime_context);
         audio_buffer_t *buffer = take_audio_buffer(audio_pool, true);
         if (buffer == NULL) {
             continue;
