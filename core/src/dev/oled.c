@@ -2,16 +2,13 @@
 
 #ifdef ENABLE_OLED
 
-#include <stdio.h>
 #include <string.h>
 
 #include "pico/stdlib.h"
-#include "pico/time.h"
 
 #include "config.h"
 #include "dev/u8g2_pico.h"
 #include "drv/i2c_bus.h"
-#include "multicore_display.h"
 
 #ifdef ENABLE_I2C_DMA
 #include "hardware/regs/i2c.h"
@@ -19,8 +16,6 @@
 
 static u8g2_t g_u8g2;
 static bool g_oled_ready;
-static absolute_time_t g_next_frame;
-static uint32_t g_frame_counter;
 
 #ifdef ENABLE_I2C_DMA
 static bool g_oled_dma_ready;
@@ -85,7 +80,9 @@ static bool oled_queue_full_frame_dma(void) {
 }
 #endif
 
-static void oled_flush(void) {
+void oled_backend_flush(void) {
+    if (!g_oled_ready) return;
+
 #ifdef ENABLE_I2C_DMA
     if (g_oled_dma_ready) {
         (void)oled_queue_full_frame_dma();
@@ -99,82 +96,17 @@ static i2c_inst_t *oled_get_i2c(void) {
     return i2c_bus_get_inst((i2c_bus_id_t)OLED_I2C_BUS_ID);
 }
 
-/* Dashed line pattern: segment length and gap in pixels. */
-#define DASH_SEGMENT_LEN  4
-#define DASH_GAP_LEN     4
-
-static void oled_draw_dashed_hline(u8g2_t *u8g2, uint8_t x0, uint8_t x1, uint8_t y) {
-    unsigned int x = x0;
-    while (x <= x1) {
-        unsigned int seg_end = x + DASH_SEGMENT_LEN;
-        if (seg_end > x1) seg_end = x1 + 1;
-        u8g2_DrawHLine(u8g2, (uint8_t)x, y, (uint8_t)(seg_end - x));
-        x = seg_end + DASH_GAP_LEN;
-    }
-}
-
-static void oled_draw_dashed_vline(u8g2_t *u8g2, uint8_t x, uint8_t y0, uint8_t y1) {
-    unsigned int y = y0;
-    while (y <= y1) {
-        unsigned int seg_end = y + DASH_SEGMENT_LEN;
-        if (seg_end > y1) seg_end = y1 + 1;
-        u8g2_DrawVLine(u8g2, x, (uint8_t)y, (uint8_t)(seg_end - y));
-        y = seg_end + DASH_GAP_LEN;
-    }
-}
-
-/* Grid: 3 horizontal and 5 vertical dashed lines over the waveform area. */
-#define GRID_TOP_Y    0
-#define GRID_BOTTOM_Y (OLED_HEIGHT - 1)
-#define GRID_LEFT_X   0
-#define GRID_RIGHT_X  (OLED_WIDTH - 1)
-
-static void oled_draw_grid(u8g2_t *u8g2) {
-    /* 3 horizontal lines: divide height into 4 bands -> y at 1/4, 2/4, 3/4 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 4);      /* 16 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, OLED_HEIGHT / 2);      /* 32 */
-    oled_draw_dashed_hline(u8g2, GRID_LEFT_X, GRID_RIGHT_X, (3 * OLED_HEIGHT) / 4); /* 48 */
-    /* 5 vertical lines: divide width into 6 bands -> x at 1/6 .. 5/6 */
-    oled_draw_dashed_vline(u8g2, OLED_WIDTH / 6,                  GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (2 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (3 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (4 * OLED_WIDTH) / 6,           GRID_TOP_Y, GRID_BOTTOM_Y);
-    oled_draw_dashed_vline(u8g2, (5 * OLED_WIDTH) / 6,            GRID_TOP_Y, GRID_BOTTOM_Y);
-}
-
 static void oled_draw_boot(void) {
     u8g2_ClearBuffer(&g_u8g2);
     u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
     u8g2_DrawStr(&g_u8g2, 0, 12, "SSD1306 OLED");
     u8g2_DrawStr(&g_u8g2, 0, 26, "u8g2 + Pico");
-    u8g2_SendBuffer(&g_u8g2);
+    oled_backend_flush();
 }
 
-static void oled_draw_waveform(const uint8_t y[128]) {
-    u8g2_ClearBuffer(&g_u8g2);
-    u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
+bool oled_backend_init(void) {
+    if (g_oled_ready) return true;
 
-    char line[32];
-    snprintf(line, sizeof(line), "frame %lu", (unsigned long) g_frame_counter);
-    u8g2_DrawStr(&g_u8g2, 0, 10, line);
-
-    oled_draw_grid(&g_u8g2);
-
-    uint8_t prev_y = y[0];
-    for (int x = 0; x < 128; x++) {
-        uint8_t yy = y[x];
-        if (x > 0) {
-            u8g2_DrawLine(&g_u8g2, x - 1, prev_y, x, yy);
-        } else {
-            u8g2_DrawPixel(&g_u8g2, x, yy);
-        }
-        prev_y = yy;
-    }
-
-    oled_flush();
-}
-
-bool oled_init(void) {
     // If the bus is stuck (e.g., SDA held low), recover first so init cannot hang core0.
     i2c_bus_recover((i2c_bus_id_t)OLED_I2C_BUS_ID);
 
@@ -204,40 +136,23 @@ bool oled_init(void) {
     oled_draw_boot();
 
     g_oled_ready = true;
-    g_next_frame = make_timeout_time_ms(250);
-    g_frame_counter = 0;
     return true;
 }
 
-void oled_task(void) {
-    if (!g_oled_ready) return;
+bool oled_backend_ready(void) {
+    return g_oled_ready;
+}
 
-    absolute_time_t now = get_absolute_time();
-    if (absolute_time_diff_us(now, g_next_frame) > 0) {
-        return; // not yet
-    }
-    g_next_frame = delayed_by_ms(now, 1000 / OLED_REFRESH_FPS);
-    g_frame_counter++;
-
-    uint8_t y[128];
-    if (multicore_display_read_latest(y)) {
-        oled_draw_waveform(y);
-    } else {
-        // No waveform yet: keep showing a small animation.
-        u8g2_ClearBuffer(&g_u8g2);
-        u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
-        u8g2_DrawStr(&g_u8g2, 0, 12, "Waiting waveform...");
-        u8g2_DrawFrame(&g_u8g2, 0, 20, OLED_WIDTH, OLED_HEIGHT - 20);
-        int x = (int) (g_frame_counter % (OLED_WIDTH - 6));
-        u8g2_DrawBox(&g_u8g2, x, 24, 6, 6);
-        oled_flush();
-    }
+oled_canvas_t *oled_backend_u8g2(void) {
+    if (!g_oled_ready) return NULL;
+    return &g_u8g2;
 }
 
 #else
 
-bool oled_init(void) { return false; }
-void oled_task(void) { (void)0; }
+bool oled_backend_init(void) { return false; }
+bool oled_backend_ready(void) { return false; }
+oled_canvas_t *oled_backend_u8g2(void) { return NULL; }
+void oled_backend_flush(void) { (void) 0; }
 
 #endif // ENABLE_OLED
-

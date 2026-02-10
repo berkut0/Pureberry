@@ -18,3 +18,6 @@
 	path = third_party/pico-mpr121
 	url = https://github.com/antgon/pico-mpr121.git
 
+[submodule "third_party/multibutton"]
+	path = third_party/multibutton
+	url = https://github.com/0x1abin/MultiButton.git

@@ -40,6 +40,21 @@
 // #define USB_INIT_DELAY_MS 1
 // #define MAIN_LOOP_SLEEP_US 100
 
+// UI input baseline (Phase 2, MultiButton backend).
+// Defaults in config.h are:
+// - UI_INPUT_ENABLED: ON when ENABLE_OLED=ON, else OFF
+// - UI_INPUT_TICK_MS: 5 (align with MultiButton defaults)
+// - pins: LEFT=15, CENTER=14, RIGHT=13
+//
+// Uncomment and tune for your board wiring.
+// #define UI_INPUT_ENABLED 1
+// #define UI_INPUT_TICK_MS 5
+// #define UI_INPUT_EVENT_QUEUE_SIZE 16
+// #define UI_BTN_ACTIVE_LOW 1
+// #define UI_BTN_LEFT_PIN 15
+// #define UI_BTN_CENTER_PIN 14
+// #define UI_BTN_RIGHT_PIN 13
+
 // SSD1306 OLED (u8g2) over I2C (optional)
 //
 // I2C bus configuration:

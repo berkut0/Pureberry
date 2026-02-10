@@ -41,6 +41,40 @@
 #define MAIN_LOOP_SLEEP_US 100
 #endif
 
+// UI input (buttons/gestures -> ui_action_t)
+#ifndef UI_INPUT_ENABLED
+#  ifdef ENABLE_OLED
+#    define UI_INPUT_ENABLED 1
+#  else
+#    define UI_INPUT_ENABLED 0
+#  endif
+#endif
+
+// MultiButton's default timing model assumes a 5 ms periodic tick.
+#ifndef UI_INPUT_TICK_MS
+#define UI_INPUT_TICK_MS 5
+#endif
+
+#ifndef UI_INPUT_EVENT_QUEUE_SIZE
+#define UI_INPUT_EVENT_QUEUE_SIZE 16
+#endif
+
+#ifndef UI_BTN_ACTIVE_LOW
+#define UI_BTN_ACTIVE_LOW 1
+#endif
+
+#ifndef UI_BTN_LEFT_PIN
+#define UI_BTN_LEFT_PIN 15
+#endif
+
+#ifndef UI_BTN_CENTER_PIN
+#define UI_BTN_CENTER_PIN 14
+#endif
+
+#ifndef UI_BTN_RIGHT_PIN
+#define UI_BTN_RIGHT_PIN 13
+#endif
+
 // I2S (pico-extras / PICO_AUDIO_I2S_*)
 // Clock pins are consecutive; order is controlled by PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED.
 // Defaults free GPIO 26-29 for ADC potentiometers.
