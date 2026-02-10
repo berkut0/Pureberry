@@ -88,6 +88,8 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/input/ui_input_multibutton.c
     src/input/ui_action_map.c
     src/ui/ui_manager.c
+    src/ui/mui/ui_mui_runtime.c
+    src/ui/mui/ui_mui_forms.c
     src/ui/screens/ui_screen_main_menu.c
     src/ui/screens/ui_screen_waveform.c
     src/drv/i2c_bus.c

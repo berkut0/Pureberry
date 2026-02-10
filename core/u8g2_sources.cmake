@@ -1,6 +1,9 @@
 set(U8G2_CORE_SOURCES
+    ${U8G2_CSRC_DIR}/mui.c
+    ${U8G2_CSRC_DIR}/mui_u8g2.c
     ${U8G2_CSRC_DIR}/u8g2_arc.c
     ${U8G2_CSRC_DIR}/u8g2_bitmap.c
+    ${U8G2_CSRC_DIR}/u8g2_button.c
     ${U8G2_CSRC_DIR}/u8g2_box.c
     ${U8G2_CSRC_DIR}/u8g2_buffer.c
     ${U8G2_CSRC_DIR}/u8g2_circle.c
