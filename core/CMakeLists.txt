@@ -51,6 +51,12 @@ option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF
 option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" OFF)
 option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
 option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" OFF)
+set(
+    FW_SYS_CLOCK_PROFILE_OVERRIDE
+    ""
+    CACHE STRING
+    "Optional override for FW_SYS_CLOCK_PROFILE macro (empty: use config.h/config_local.h)"
+)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -60,6 +66,13 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HV_BARE_METAL)
 
 # Make project config visible to pico-sdk (and thus to pico-extras sources too)
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_config.h)
+
+if(NOT "${FW_SYS_CLOCK_PROFILE_OVERRIDE}" STREQUAL "")
+    target_compile_definitions(
+        ${PROJECT_NAME}.elf PRIVATE FW_SYS_CLOCK_PROFILE=${FW_SYS_CLOCK_PROFILE_OVERRIDE}
+    )
+    message(STATUS "FW_SYS_CLOCK_PROFILE override: ${FW_SYS_CLOCK_PROFILE_OVERRIDE}")
+endif()
 
 # Optional firmware log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)
 set(FIRMWARE_LOG_LEVEL "" CACHE STRING "Firmware log level (0..3)")

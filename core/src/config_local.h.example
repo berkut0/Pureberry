@@ -40,6 +40,29 @@
 // #define USB_INIT_DELAY_MS 1
 // #define MAIN_LOOP_SLEEP_US 100
 
+// System clock profile (RP2350)
+//
+// Default repo behavior: FW_SYS_CLOCK_PROFILE_DEFAULT (SDK default 150 MHz on RP2350).
+// Uncomment to test 240 MHz OC profile from config.h:
+// #define FW_SYS_CLOCK_PROFILE FW_SYS_CLOCK_PROFILE_OC_240MHZ
+// Or force the same profile from build CLI (explicit override):
+//   python scripts/build_firmware.py <patch.pd> --overclocked
+//
+// Advanced manual override (if you want custom frequency/PLL tuple):
+// #define SYS_CLK_HZ 200000000
+// #define PLL_SYS_REFDIV 1
+// #define PLL_SYS_VCO_FREQ_HZ 1200000000
+// #define PLL_SYS_POSTDIV1 6
+// #define PLL_SYS_POSTDIV2 1
+//
+// Flash/XIP tuning for OC experiments (board-specific):
+// NOTE: boot stage2 is built separately, so set this via build script CMake define:
+//   python scripts/build_firmware.py <patch.pd> -D PICO_FLASH_SPI_CLKDIV=4
+//
+// Optional VREG policy for higher clocks:
+// #define SYS_CLK_VREG_VOLTAGE_AUTO_ADJUST 1
+// #define SYS_CLK_VREG_VOLTAGE_MIN VREG_VOLTAGE_1_15
+
 // UI input baseline (Phase 2, MultiButton backend).
 // Defaults in config.h are:
 // - UI_INPUT_ENABLED: ON when ENABLE_OLED=ON, else OFF

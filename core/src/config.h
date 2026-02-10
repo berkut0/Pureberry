@@ -19,6 +19,50 @@
 // - ENABLE_WS2812
 // - ENABLE_USB_MIDI
 
+// System clock profile (RP2350).
+// Default profile keeps pico-sdk defaults (150 MHz on RP2350).
+// OC 240 profile sets a known-valid PLL tuple from pico-sdk vcocalc.py.
+// Notes:
+// - Overclocking is experimental; validate on target hardware under load.
+// - Boot stage2 (flash/QSPI bring-up) is a separate build target and does not
+//   include config_local.h. Tune PICO_FLASH_SPI_CLKDIV via CMake (-D) if needed.
+#define FW_SYS_CLOCK_PROFILE_DEFAULT   0
+#define FW_SYS_CLOCK_PROFILE_OC_240MHZ 1
+
+#ifndef FW_SYS_CLOCK_PROFILE
+#define FW_SYS_CLOCK_PROFILE FW_SYS_CLOCK_PROFILE_DEFAULT
+#endif
+
+#if FW_SYS_CLOCK_PROFILE == FW_SYS_CLOCK_PROFILE_DEFAULT
+/* Keep SDK defaults unless explicitly overridden below/in config_local.h */
+#elif FW_SYS_CLOCK_PROFILE == FW_SYS_CLOCK_PROFILE_OC_240MHZ
+/* 240 MHz = 12 MHz / 1 * 120 / 6 / 1 (VCO 1.44 GHz) */
+#ifndef SYS_CLK_HZ
+#define SYS_CLK_HZ 240000000
+#endif
+#ifndef PLL_SYS_REFDIV
+#define PLL_SYS_REFDIV 1
+#endif
+#ifndef PLL_SYS_VCO_FREQ_HZ
+#define PLL_SYS_VCO_FREQ_HZ 1440000000
+#endif
+#ifndef PLL_SYS_POSTDIV1
+#define PLL_SYS_POSTDIV1 6
+#endif
+#ifndef PLL_SYS_POSTDIV2
+#define PLL_SYS_POSTDIV2 1
+#endif
+/* Raise VREG floor for OC profile (SDK does not auto-adjust on RP2350). */
+#ifndef SYS_CLK_VREG_VOLTAGE_AUTO_ADJUST
+#define SYS_CLK_VREG_VOLTAGE_AUTO_ADJUST 1
+#endif
+#ifndef SYS_CLK_VREG_VOLTAGE_MIN
+#define SYS_CLK_VREG_VOLTAGE_MIN VREG_VOLTAGE_1_15
+#endif
+#else
+#error "Unsupported FW_SYS_CLOCK_PROFILE value"
+#endif
+
 // USB MIDI
 #ifdef ENABLE_USB_MIDI
 // MIDI device name shown by the host OS.
