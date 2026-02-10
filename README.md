@@ -59,12 +59,20 @@ python scripts/build_firmware.py pd-patches/your_patch.pd --oled --mpr121 --usb-
 
 # Disable WS2812 (ON by default)
 python scripts/build_firmware.py pd-patches/your_patch.pd --no-ws2812
+
+# Force 240 MHz OC profile (explicit override from build script)
+python scripts/build_firmware.py pd-patches/your_patch.pd --overclocked
 ```
 
 You can always pass explicit CMake defines:
 ```bash
 python scripts/build_firmware.py pd-patches/your_patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
 ```
+
+Clock behavior:
+- If `FW_SYS_CLOCK_PROFILE` is defined in `core/src/config.h` / `core/src/config_local.h`, firmware uses it.
+- `--overclocked` explicitly overrides this at build time to `FW_SYS_CLOCK_PROFILE_OC_240MHZ`.
+- With `--overclocked`, script also defaults `PICO_FLASH_SPI_CLKDIV=4` unless you pass your own `-D PICO_FLASH_SPI_CLKDIV=...`.
 
 ### Logging Levels
 
