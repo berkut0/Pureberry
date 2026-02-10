@@ -32,6 +32,12 @@ bool audio_runtime_init_output(void);
  */
 void audio_runtime_start(struct HeavyContextInterface *ctx);
 
+/**
+ * Core1 DSP average load in permille (1000 = 100.0%).
+ * Updated from the core1 loop using a ~1 second audio window.
+ */
+uint32_t audio_runtime_get_core1_dsp_load_avg_permille(void);
+
 #ifdef __cplusplus
 }
 #endif

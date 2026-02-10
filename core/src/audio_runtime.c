@@ -15,6 +15,7 @@
 #include "pico/audio.h"
 #include "pico/audio_i2s.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 #define AUDIO_RUNTIME_SAMPLE_RATE 48000u
 #define AUDIO_RUNTIME_BLOCK_SIZE 64u  /* Heavy default block size */
@@ -42,6 +43,7 @@ static const audio_i2s_config_t i2s_config = {
 static audio_buffer_pool_t *audio_pool;
 static HeavyContextInterface *runtime_context;
 static bool core1_started;
+static uint32_t g_core1_dsp_avg_permille;
 
 static void float_to_int16(const float *in, int16_t *out, size_t count) {
     for (size_t i = 0; i < count; i++) {
@@ -54,6 +56,8 @@ static void float_to_int16(const float *in, int16_t *out, size_t count) {
 
 static void audio_core1_main(void) {
     static float audio_out_buffer[AUDIO_RUNTIME_BUFFER_SIZE];
+    uint64_t dsp_accum_process_us = 0;
+    uint32_t dsp_accum_frames = 0;
     while (true) {
         if (audio_pool == NULL || runtime_context == NULL) {
             continue;
@@ -73,7 +77,26 @@ static void audio_core1_main(void) {
             if (block == blocks_to_process - 1u) {
                 block_size = samples_per_channel - (block * AUDIO_RUNTIME_BLOCK_SIZE);
             }
+
+            uint64_t t0 = time_us_64();
             hv_processInlineInterleaved(runtime_context, NULL, audio_out_buffer, block_size);
+            uint64_t t1 = time_us_64();
+            dsp_accum_process_us += (t1 - t0);
+            dsp_accum_frames += (uint32_t) block_size;
+
+            if (dsp_accum_frames >= AUDIO_RUNTIME_SAMPLE_RATE) {
+                const uint64_t numerator =
+                    dsp_accum_process_us * (uint64_t) AUDIO_RUNTIME_SAMPLE_RATE * 1000ull;
+                const uint64_t denominator = (uint64_t) dsp_accum_frames * 1000000ull;
+                uint32_t permille = 0u;
+                if (denominator > 0u) {
+                    permille = (uint32_t) (numerator / denominator);
+                }
+                __atomic_store_n(&g_core1_dsp_avg_permille, permille, __ATOMIC_RELAXED);
+                dsp_accum_process_us = 0u;
+                dsp_accum_frames = 0u;
+            }
+
 #ifdef ENABLE_OLED
             multicore_display_capture_interleaved(audio_out_buffer, block_size);
 #endif
@@ -111,7 +134,12 @@ bool audio_runtime_init_output(void) {
 void audio_runtime_start(struct HeavyContextInterface *ctx) {
     if (core1_started || ctx == NULL) return;
     runtime_context = (HeavyContextInterface *) ctx;
+    __atomic_store_n(&g_core1_dsp_avg_permille, 0u, __ATOMIC_RELAXED);
     __sync_synchronize();
     multicore_launch_core1(audio_core1_main);
     core1_started = true;
+}
+
+uint32_t audio_runtime_get_core1_dsp_load_avg_permille(void) {
+    return __atomic_load_n(&g_core1_dsp_avg_permille, __ATOMIC_RELAXED);
 }

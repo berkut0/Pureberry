@@ -13,6 +13,7 @@ static mui_t g_mui;
 static bool g_runtime_ready;
 static bool g_exit_to_waveform;
 static ui_mui_runtime_stats_t g_stats;
+static int g_last_form_id = -1;
 
 static void ui_mui_runtime_process_special_forms(void) {
     if (!g_runtime_ready) {
@@ -35,6 +36,20 @@ static void ui_mui_runtime_update_exit_flag(void) {
     }
 }
 
+static void ui_mui_runtime_handle_form_change(void) {
+    if (!g_runtime_ready) {
+        return;
+    }
+
+    const int form_id = mui_GetCurrentFormId(&g_mui);
+    if (form_id == g_last_form_id) {
+        return;
+    }
+
+    g_last_form_id = form_id;
+    ui_mui_forms_on_form_enter(form_id);
+}
+
 bool ui_mui_runtime_init(u8g2_t *u8g2) {
     if (!u8g2) {
         g_runtime_ready = false;
@@ -52,6 +67,7 @@ bool ui_mui_runtime_init(u8g2_t *u8g2) {
     mui_Init(&g_mui, u8g2, fds, muif, muif_count);
     g_runtime_ready = true;
     g_exit_to_waveform = false;
+    g_last_form_id = -1;
     memset(&g_stats, 0, sizeof(g_stats));
     return ui_mui_runtime_enter_root();
 }
@@ -62,7 +78,12 @@ bool ui_mui_runtime_enter_root(void) {
     }
 
     g_exit_to_waveform = false;
-    return mui_GotoForm(&g_mui, ui_mui_forms_root_form_id(), 0) != 0;
+    g_last_form_id = -1;
+    const bool ok = mui_GotoForm(&g_mui, ui_mui_forms_root_form_id(), 0) != 0;
+    if (ok) {
+        ui_mui_runtime_handle_form_change();
+    }
+    return ok;
 }
 
 void ui_mui_runtime_draw(void) {
@@ -79,6 +100,9 @@ void ui_mui_runtime_draw(void) {
         g_exit_to_waveform = true;
         return;
     }
+
+    ui_mui_runtime_handle_form_change();
+    ui_mui_forms_on_before_draw(mui_GetCurrentFormId(&g_mui));
 
     u8g2_t *u8g2 = mui_get_U8g2(&g_mui);
     if (!u8g2) {
@@ -99,6 +123,14 @@ bool ui_mui_runtime_handle_action(ui_action_t action) {
     const uint8_t root_form_id = ui_mui_forms_root_form_id();
     const int form_id = mui_GetCurrentFormId(&g_mui);
     bool handled = true;
+
+    if (form_id >= 0 && ui_mui_forms_try_handle_action(form_id, action)) {
+        g_stats.actions_forwarded++;
+        ui_mui_runtime_process_special_forms();
+        ui_mui_runtime_update_exit_flag();
+        ui_mui_runtime_handle_form_change();
+        return true;
+    }
 
     switch (action) {
         case UI_ACTION_NAV_NEXT:
@@ -140,6 +172,7 @@ bool ui_mui_runtime_handle_action(ui_action_t action) {
         g_stats.actions_forwarded++;
         ui_mui_runtime_process_special_forms();
         ui_mui_runtime_update_exit_flag();
+        ui_mui_runtime_handle_form_change();
     } else {
         g_stats.actions_ignored++;
     }
