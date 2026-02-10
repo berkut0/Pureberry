@@ -77,6 +77,53 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 - **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
 - **Context Integration**: Generates CMake manifest (`heavy_sources.cmake`) listing Heavy sources and includes it via `HEAVY_SOURCES_FILE` variable
 
+### Feature Flags (Build-Time Options)
+
+Defaults (when no flags are provided):
+- `ENABLE_WS2812=ON` (opt-out)
+- `ENABLE_OLED=OFF`
+- `ENABLE_MPR121=OFF`
+- `ENABLE_USB_MIDI=OFF`
+- `ENABLE_I2C_DMA=OFF`
+
+Build script flags (single argument per feature):
+```bash
+# Enable optional features
+python scripts/build_firmware.py patch.pd --oled --mpr121 --usb-midi --i2c-dma
+
+# Disable WS2812 (ON by default)
+python scripts/build_firmware.py patch.pd --no-ws2812
+```
+
+You can always pass explicit CMake defines:
+```bash
+python scripts/build_firmware.py patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
+```
+
+### USB Stack Contract (Current)
+
+USB is unified and must stay this way:
+
+- The firmware always uses TinyUSB device stack (`tinyusb_device`, `tinyusb_board`).
+- `pico_stdio_usb` is not used by firmware targets.
+- CDC is always enabled (`CFG_TUD_CDC=1`).
+- `ENABLE_USB_MIDI` only toggles MIDI class (`CFG_TUD_MIDI`) and descriptor shape (CDC-only vs CDC+MIDI).
+
+Runtime rules:
+
+- USB stack servicing (`tud_task()`) runs continuously on core0 in the main loop.
+- `usb_cdc_task()` runs on core0 in all builds.
+- `usb_midi_task()` runs on core0 only when `ENABLE_USB_MIDI=ON`.
+- TinyUSB callbacks must remain lightweight and non-blocking (no heavy I/O).
+
+Implementation map:
+
+- Build wiring: `core/CMakeLists.txt`
+- TinyUSB config: `core/src/tusb_config.h`
+- USB descriptors: `core/src/usb/usb_descriptors.c`
+- CDC stdio bridge: `core/src/usb/usb_cdc.c`
+- MIDI ingress: `core/src/usb/usb_midi.c`
+
 ### Logging System
 
 The build script provides a unified logging system with multiple verbosity levels:
@@ -99,12 +146,12 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 ### I2S Configuration
 
-- **Hardware**: PCM5102A DAC (или совместимый I2S DAC)
-- **Пины** задаются в `core/src/config.h` (дефолты) или в `core/src/config_local.h` (локальные переопределения, см. `config_local.h.example`):
-  - `PICO_AUDIO_I2S_DATA_PIN` — DIN (данные)
-  - `PICO_AUDIO_I2S_CLOCK_PIN_BASE` — первый пин тактирования (следующий идёт `base+1`)
+- **Hardware**: PCM5102A DAC (or compatible I2S DAC)
+- **Pins** are configured in `core/src/config.h` (repo defaults) or `core/src/config_local.h` (local overrides; see `config_local.h.example`):
+  - `PICO_AUDIO_I2S_DATA_PIN` — DIN (data)
+  - `PICO_AUDIO_I2S_CLOCK_PIN_BASE` — first clock pin (the next one is `base+1`)
   - `PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED`: 0 = base→LRCLK (WS), base+1→BCLK; 1 = base→BCLK, base+1→LRCLK
-- **Дефолты в репо**: DIN=26, base=27 (LRCLK=27, BCLK=28 при swap=0). Пример для другой разводки (DIN=5, LRCLK=6, BCLK=7, swap=0) — в `config_local.h.example`.
+- **Repo defaults**: DIN=GPIO5, base=GPIO6 (LRCLK=GPIO6, BCLK=GPIO7 when swap=0). Example alternative wiring is in `config_local.h.example`.
 - **Format**: 16-bit signed PCM, stereo, 48 kHz
 
 ### Audio Flow
@@ -131,12 +178,12 @@ python scripts/build_firmware.py patch.pd -d   # debug mode
 
 ### Multicore
 
-The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via two queues (see `core/src/multicore_audio.h`):
+The firmware uses strict multicore separation: audio runs on **core1** only; **core0** handles init, USB/MIDI, and peripherals (WS2812). This is the only supported execution mode. Communication is via `core/src/crosscore_bus.h`:
 
-- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `ctrl_push_hash_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
-- **led_queue (core1 → core0)**: Pd send-hook commands (set_led_color, set_led_index). The send hook runs in the Heavy/audio context and **only parses and enqueues**; core0 drains in the main loop and performs the actual work (I2C, GPIO, display). Overflow policy: drop newest.
+- **ctrl_queue (core0 → core1)**: MIDI and other control events. core0 pushes via `patch_api_push_*` (MIDI) or `crosscore_bus_ctrl_try_push_*` (generic); core1 drains at the start of each audio buffer and applies them to Heavy. Overflow policy: drop newest.
+- **led_mailbox (core1 → core0)**: Pd send-hook LED color state (`set_led_color`). The send hook runs in the Heavy/audio context and only parses/publishes latest color; core0 consumes latest state in the main loop and performs the hardware update.
 
-DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. For the full set of architectural rules (who may call Heavy, what is allowed on each core), see the plan’s **Invariants** section.
+DMA/IRQ remain on core0; the buffer pool uses spinlocks so producer (core1) and consumer (DMA) are safe across cores. The full architectural rules are defined in the "Strict Multicore Rules" section below.
 
 #### Strict Multicore Rules (Must Always Hold)
 
@@ -144,7 +191,7 @@ These rules define the architecture contracts that must be maintained for correc
 
 1. **Heavy context ownership**: Only **core1** may call any Heavy API functions:
    - `hv_process*()` / `hv_processInlineInterleaved()` - audio processing
-   - `hv_sendMessageToReceiver*()` - control message injection (called via `multicore_drain_ctrl()`)
+   - `hv_sendMessageToReceiver*()` - control message injection (called via `crosscore_bus_ctrl_drain_to_heavy()`)
    - `hv_patch_new()` / `hv_patch_free()` - context lifecycle
    - **core0 must never call Heavy APIs directly**
 
@@ -155,27 +202,43 @@ These rules define the architecture contracts that must be maintained for correc
    - No dynamic memory allocation (`malloc`/`free`)
    - No long critical sections or spinlocks (except audio buffer pool, which is designed for cross-core use)
 
-3. **Send hook execution context**: The send hook runs in the Heavy/audio context (RT). **Single entry point**: `hv_setSendHook()` is called in exactly one place — `patch_api_init(ctx)` in `patch_api.c`. No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. The hook must be RT-safe: only minimal parsing and enqueue into one or more queues (led_queue, future cmd_queue). Core0 in the main loop drains these queues and performs the real work (I2C, GPIO, display). Do not call `ws2812_set_*()` or other hardware drivers directly from the send hook.
+3. **Send hook execution context**: The send hook runs in the Heavy/audio context (RT). **Single entry point**: `hv_setSendHook()` is called in exactly one place — `patch_api_init(ctx)` in `patch_api.c`. No driver (ws2812, future I2C/encoders/display) must ever call `hv_setSendHook()`. The hook must be RT-safe: only minimal parsing and transport publish (currently: LED mailbox). Core0 in the main loop consumes transport state and performs the real work (I2C, GPIO, display). Do not call `ws2812_set_*()` or other hardware drivers directly from the send hook.
 
 4. **I/O core (core0) responsibilities**: core0 handles all non-audio work:
    - USB stack servicing (`tud_task()`)
    - MIDI packet processing (pushes to `ctrl_queue`)
-   - Peripheral control (WS2812 LED updates via `multicore_drain_led()`)
+   - Peripheral control (WS2812 LED updates via mailbox consume + `ws2812_set_all()`)
    - Initialization (clocks, audio pool, Heavy context creation before launching core1)
 
-5. **Queue semantics**:
+5. **Transport semantics**:
    - `ctrl_queue`: core0 pushes, core1 drains once per audio buffer (before `hv_process*()`)
-   - `led_queue`: core1 send hooks push, core0 drains in main loop
-   - Overflow policy: **drop newest** (implemented in `multicore_audio.c`)
+   - `led_mailbox`: core1 send hooks publish latest color, core0 consumes latest state in main loop
+   - Overflow policy: **drop newest** applies to `ctrl_queue` only (`crosscore_bus.c`)
+
+#### I2C Bus Architecture
+
+I2C is managed through a dedicated bus layer (`core/src/drv/i2c_bus.[ch]`) and **must stay on core0**. The bus layer owns:
+- GPIO mux + pullups, `i2c_init()` and controller resets
+- bus recovery (SCL toggling + STOP)
+- timeout-based transfers (no hard hangs)
+- DMA arbitration (OLED refresh vs sensor reads)
+
+Configuration is in `core/src/config.h` with local overrides in `config_local.h`:
+- `I2C_BUS0_*` / `I2C_BUS1_*` define pins, instance, baud, timeouts
+- `OLED_I2C_BUS_ID` / `MPR121_I2C_BUS_ID` select the bus per device
+
+The core0 main loop calls `i2c_bus_poll()` to progress DMA transactions. Leaf drivers must not call `i2c_init()` directly.
 
 #### Failure Modes & Backpressure
 
-**Queue overflow**: When queues are full, new events are dropped (newest dropped policy). This is expected behavior under high event rates:
+**Transport pressure**:
+- `ctrl_queue` can overflow; new events are dropped (newest dropped policy).
+- `led_mailbox` does not queue history; newest state overwrites older state.
 
 - **ctrl_queue overflow**: MIDI events may be lost during bursts. Mitigation: rate-limit or coalesce continuous controls (CC) on core0 before pushing.
-- **led_queue overflow**: LED updates may be skipped. This is acceptable for visual feedback; audio processing continues unaffected.
+- **led_mailbox latest-wins**: intermediate LED colors may be skipped during bursts. This is expected and acceptable for visual feedback.
 
-**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `ctrl_push_hash_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
+**Message drops**: Heavy's internal message queue (used by `hv_sendMessageToReceiver*()`) may also saturate. The `crosscore_bus_ctrl_try_push_*` / `patch_api_push_*` functions return `false` on overflow, allowing core0 to implement coalescing or rate limiting.
 
 **Recommendations**:
 - For continuous controls (knobs, sensors, CC streams): coalesce updates (keep latest value only) before pushing to `ctrl_queue`. Potentiometers (knob1..knob4) are configured by **ADC channel** (first channel **POTS_ADC_FIRST_CHANNEL**, count **POTS_COUNT**); physical pins come from the SDK (chip-dependent). They are only pushed when **POTS_BACKEND** is ADC and **POTS_COUNT** > 0; values are sent only on change (poll interval **POTS_POLL_MS**, deadband **POTS_EPS**, 1-pole smoothing **POTS_ALPHA**). Otherwise those receivers receive no values.
@@ -209,13 +272,14 @@ Multicore changes should be validated under worst-case load, not only idle condi
 - **CMake 3.13+**
 - **Ninja** build system (installed via pip)
 - **ARM GCC Toolchain** (arm-none-eabi-gcc 13.2+)
-- **Clang 18+** (for host tools compilation)
+- **Host C/C++ compiler** (Clang 18+ recommended; required for Pico SDK host tools like `pioasm`)
 
 ## Software Dependencies
 
 ### Python Packages
 - `hvcc>=0.15.0`: Pure Data to C/C++ compiler
 - `ninja>=1.13.0`: Build system
+- `cmake>=3.13.0`: CMake (installed via pip)
 
 ### SDK Components
 - **pico-sdk 2.2.0+**: Core SDK for RP2350

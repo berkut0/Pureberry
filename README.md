@@ -9,9 +9,10 @@ This project compiles Pure Data patches into firmware for the RP2350 microcontro
 ## Requirements
 
 - **Python 3.9+**
-- **hvcc** (`pip install -r requirements.txt`)
+- **Python dependencies** (`pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`)
 - **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
 - **CMake 3.13+**
+- **Host C/C++ compiler** (needed for Pico SDK host tools like `pioasm`; e.g. LLVM Clang or Visual Studio Build Tools)
 - **ARM GCC toolchain** (arm-none-eabi-gcc)
 - **picotool** (optional, for manual flashing) - included as git submodule
 
@@ -42,6 +43,37 @@ The firmware UF2 file will be generated at:
 build/<patch_name>/firmware-build/rp2350_puredata_firmware.elf.uf2
 ```
 
+### Feature Flags
+
+Defaults (when no flags are provided):
+- `ENABLE_WS2812=ON` (opt-out)
+- `ENABLE_OLED=OFF`
+- `ENABLE_MPR121=OFF`
+- `ENABLE_USB_MIDI=OFF`
+- `ENABLE_I2C_DMA=OFF`
+
+CLI flags (single argument per feature):
+```bash
+# Enable optional features
+python scripts/build_firmware.py pd-patches/your_patch.pd --oled --mpr121 --usb-midi --i2c-dma
+
+# Disable WS2812 (ON by default)
+python scripts/build_firmware.py pd-patches/your_patch.pd --no-ws2812
+
+# Force 240 MHz OC profile (explicit override from build script)
+python scripts/build_firmware.py pd-patches/your_patch.pd --overclocked
+```
+
+You can always pass explicit CMake defines:
+```bash
+python scripts/build_firmware.py pd-patches/your_patch.pd -D ENABLE_OLED=ON -D ENABLE_WS2812=OFF
+```
+
+Clock behavior:
+- If `FW_SYS_CLOCK_PROFILE` is defined in `core/src/config.h` / `core/src/config_local.h`, firmware uses it.
+- `--overclocked` explicitly overrides this at build time to `FW_SYS_CLOCK_PROFILE_OC_240MHZ`.
+- With `--overclocked`, script also defaults `PICO_FLASH_SPI_CLKDIV=4` unless you pass your own `-D PICO_FLASH_SPI_CLKDIV=...`.
+
 ### Logging Levels
 
 The build script supports multiple verbosity levels:
@@ -67,6 +99,14 @@ Default pins (on typical RP2040/RP2350A builds, GPIO 26–29 remain free for on-
 - BCK (bit clock): GPIO 7
 
 Default peripherals do not conflict: OLED uses GPIO 2/3, WS2812 uses GPIO 16 (see `config.h`). See `config_local.h.example` for overrides.
+
+### I2C Bus Configuration
+
+I2C is initialized through a central bus layer on core0. Configure pins and baud rate in:
+- `core/src/config.h` - defaults
+- `core/src/config_local.h` - local overrides (copy `config_local.h.example`)
+
+Use `I2C_BUS0_*` / `I2C_BUS1_*` to define buses, and `OLED_I2C_BUS_ID` / `MPR121_I2C_BUS_ID` to select which bus each device uses. Legacy `I2C_BUS_*` / `OLED_I2C_*` macros still map to bus 0.
 
 ## Flashing
 
@@ -109,16 +149,15 @@ Use standard Pd MIDI objects in your patch: `[notein]`, `[ctlin]`, `[bendin]`, `
 - **Two classes of inputs**:
   - **Scalar state** (knob, pot, button state) → use **@hv_param** in the patch; firmware pushes by hash.
   - **Event/packet** ("button pressed", "I2C packet", "encoder +N") → use ordinary receivers/messages (not necessarily @hv_param) if it is not a UI parameter.
-- **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → queue) is in `patch_api.c`.
+- **Commands from patch** (patch → firmware): Use **cmd_*** or **fw_*** as names in `[s ...]` (patch names only; C code may use any wrapper names). The command table (name → format → handler) is in `patch_api.c`.
 
 ### Send commands (LED)
 
 Official API for LED control from the patch:
 
 - **set_led_color** `(r g b)` — three floats (0–1 or 0–255). Sets all LEDs.
-- **set_led_index** `(idx r g b)` — index plus three floats. Sets one LED.
 
-These are the only supported send commands for LED; the table is extended in `patch_api.c` for future commands.
+This is the only supported LED send command in firmware.
 
 ---
 
@@ -128,9 +167,9 @@ The firmware uses **strict multicore separation**:
 - **Core1 (audio core)**: Runs Heavy DSP processing (`hv_process*()`), owns the Heavy context, handles audio buffer production. No blocking I/O, no USB tasks, no `printf`.
 - **Core0 (I/O core)**: Handles initialization, USB/MIDI, peripherals (WS2812 LEDs), and drains control queues.
 
-Communication between cores uses two queues:
-- `ctrl_queue` (core0 → core1): MIDI and control events (pushed via `patch_api_push_*` or `ctrl_push_hash_*`)
-- `led_queue` (core1 → core0): LED commands from the patch send hook (routed in `patch_api.c`); core0 drains and calls `ws2812_*`
+Communication between cores uses:
+- `ctrl_queue` (core0 → core1): MIDI/control events (pushed via `patch_api_push_*` / `crosscore_bus_ctrl_try_push_*`)
+- `led_mailbox` (core1 → core0): latest LED color published by patch send hook; core0 consumes latest state and applies `ws2812_set_all(...)`
 
 For complete architecture details, strict multicore rules, failure modes, and validation guidance, see [TECH.md](TECH.md).
 

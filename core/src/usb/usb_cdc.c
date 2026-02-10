@@ -7,14 +7,10 @@
 
 #include "usb_cdc.h"
 #include "tusb.h"
-#include "pico/time.h"
 #include "pico/stdio/driver.h"
 #include "pico/binary_info.h"
 #include <stdio.h>
 #include <string.h>
-
-// Timeout for stdout writes (microseconds)
-#define USB_CDC_STDOUT_TIMEOUT_US 500000
 
 // Initialize USB CDC
 void usb_cdc_init(void) {
@@ -24,50 +20,33 @@ void usb_cdc_init(void) {
 
 // Check if USB CDC is connected
 bool usb_cdc_connected(void) {
-    return tud_cdc_connected();
+    return tud_inited() && tud_cdc_connected();
 }
 
 // Write characters to USB CDC
 void usb_cdc_write_chars(const char *buf, int length) {
-    static uint64_t last_avail_time = 0;
-    
-    if (usb_cdc_connected()) {
-        for (int i = 0; i < length;) {
-            int n = length - i;
-            int avail = (int) tud_cdc_write_available();
-            
-            if (n > avail) {
-                n = avail;
-            }
-            
-            if (n) {
-                int n2 = (int) tud_cdc_write(buf + i, (uint32_t)n);
-                tud_task(); // Service USB
-                tud_cdc_write_flush();
-                i += n2;
-                last_avail_time = time_us_64();
-            } else {
-                tud_task(); // Service USB
-                tud_cdc_write_flush();
-                
-                // Timeout if buffer full for too long
-                if (!usb_cdc_connected() ||
-                    (!tud_cdc_write_available() && time_us_64() > last_avail_time + USB_CDC_STDOUT_TIMEOUT_US)) {
-                    break;
-                }
-            }
-        }
-    } else {
-        // Reset timeout if not connected
-        last_avail_time = 0;
+    if (!buf || length <= 0) return;
+    if (!usb_cdc_connected()) return;
+
+    // Best-effort write: do not call tud_task() here (serviced from main loop).
+    int written_total = 0;
+    while (written_total < length) {
+        uint32_t avail = tud_cdc_write_available();
+        if (!avail) break;
+
+        uint32_t chunk = (uint32_t)(length - written_total);
+        if (chunk > avail) chunk = avail;
+
+        uint32_t n = tud_cdc_write(buf + written_total, chunk);
+        if (!n) break;
+        written_total += (int)n;
     }
 }
 
 // Flush USB CDC output
 void usb_cdc_flush(void) {
-    do {
-        tud_task(); // Service USB
-    } while (tud_cdc_write_flush());
+    if (!usb_cdc_connected()) return;
+    (void)tud_cdc_write_flush();
 }
 
 // Read characters from USB CDC
@@ -78,6 +57,11 @@ int usb_cdc_read_chars(char *buf, int length) {
     
     uint32_t count = tud_cdc_read(buf, (uint32_t)length);
     return (int)count;
+}
+
+void usb_cdc_task(void) {
+    if (!usb_cdc_connected()) return;
+    (void)tud_cdc_write_flush();
 }
 
 //--------------------------------------------------------------------+

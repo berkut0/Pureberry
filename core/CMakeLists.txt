@@ -11,11 +11,23 @@ endif()
 
 set(LOCAL_PICOTOOL_PATH "${PROJECT_ROOT}/third_party/picotool")
 
-if(NOT DEFINED PICOTOOL_FETCH_FROM_GIT_PATH AND
+# IMPORTANT:
+# Do NOT set PICOTOOL_FETCH_FROM_GIT_PATH to the picotool submodule root.
+# Pico SDK's Findpicotool.cmake uses PICOTOOL_FETCH_FROM_GIT_PATH as an *install/build directory*
+# and will create picotool-src/, picotool-build/, picotool-subbuild/, picotool/ under it.
+# If pointed at the submodule, the submodule becomes permanently "dirty" (untracked build artifacts).
+#
+# Instead, keep using the local submodule as the git source, but put build/install output under repo build/
+# which is already ignored.
+if(NOT DEFINED PICOTOOL_GIT_REPOSITORY_URL AND
    (EXISTS "${LOCAL_PICOTOOL_PATH}/.git" OR EXISTS "${LOCAL_PICOTOOL_PATH}/CMakeLists.txt"))
     file(TO_CMAKE_PATH "${LOCAL_PICOTOOL_PATH}" LOCAL_PICOTOOL_PATH_CMAKE)
-    set(PICOTOOL_FETCH_FROM_GIT_PATH "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE PATH "Local picotool path")
-    message(STATUS "Using local picotool from submodule: ${LOCAL_PICOTOOL_PATH_CMAKE}")
+    set(PICOTOOL_GIT_REPOSITORY_URL "${LOCAL_PICOTOOL_PATH_CMAKE}" CACHE STRING "Picotool git repository (local)" FORCE)
+endif()
+
+if(NOT DEFINED PICOTOOL_FETCH_FROM_GIT_PATH)
+    file(TO_CMAKE_PATH "${PROJECT_ROOT}/build/_picotool" PICOTOOL_BUILD_ROOT_CMAKE)
+    set(PICOTOOL_FETCH_FROM_GIT_PATH "${PICOTOOL_BUILD_ROOT_CMAKE}" CACHE PATH "Picotool build/install dir" FORCE)
 endif()
 
 # Include pico_sdk_import.cmake from the project root
@@ -36,9 +48,16 @@ set(CMAKE_CXX_STANDARD 17)
 # Optional features
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
-option(ENABLE_USB_AUDIO "Enable USB Audio device mode (UAC2 speaker input)" OFF)
-option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" ON)
+option(ENABLE_USB_AUDIO "Enable USB Audio support (CDC+Audio composite device)" OFF)
+option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" OFF)
 option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
+option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" OFF)
+set(
+    FW_SYS_CLOCK_PROFILE_OVERRIDE
+    ""
+    CACHE STRING
+    "Optional override for FW_SYS_CLOCK_PROFILE macro (empty: use config.h/config_local.h)"
+)
 
 # Add executable
 add_executable(${PROJECT_NAME}.elf)
@@ -48,6 +67,22 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HV_BARE_METAL)
 
 # Make project config visible to pico-sdk (and thus to pico-extras sources too)
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PICO_CONFIG_HEADER=pico_config.h)
+
+if(NOT "${FW_SYS_CLOCK_PROFILE_OVERRIDE}" STREQUAL "")
+    target_compile_definitions(
+        ${PROJECT_NAME}.elf PRIVATE FW_SYS_CLOCK_PROFILE=${FW_SYS_CLOCK_PROFILE_OVERRIDE}
+    )
+    message(STATUS "FW_SYS_CLOCK_PROFILE override: ${FW_SYS_CLOCK_PROFILE_OVERRIDE}")
+endif()
+
+# Optional firmware log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)
+set(FIRMWARE_LOG_LEVEL "" CACHE STRING "Firmware log level (0..3)")
+if(NOT "${FIRMWARE_LOG_LEVEL}" STREQUAL "")
+    if(NOT FIRMWARE_LOG_LEVEL MATCHES "^[0-3]$")
+        message(FATAL_ERROR "FIRMWARE_LOG_LEVEL must be 0..3 (got: '${FIRMWARE_LOG_LEVEL}')")
+    endif()
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE FIRMWARE_LOG_LEVEL=${FIRMWARE_LOG_LEVEL})
+endif()
 
 # Optional I2C DMA helper (device drivers may use it to avoid blocking I2C writes)
 if(ENABLE_I2C_DMA)
@@ -60,9 +95,21 @@ endif()
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
-    src/multicore_audio.c
+    src/audio_runtime.c
+    src/crosscore_bus.c
     src/patch_api.c
     src/crash.c
+    src/input/ui_input.c
+    src/input/ui_input_multibutton.c
+    src/input/ui_action_map.c
+    src/ui/ui_manager.c
+    src/ui/system/ui_system_stats.c
+    src/ui/mui/ui_mui_runtime.c
+    src/ui/mui/ui_mui_forms.c
+    src/ui/screens/ui_screen_main_menu.c
+    src/ui/screens/ui_screen_waveform.c
+    src/drv/i2c_bus.c
+    src/drv/spi_bus.c
     src/dev/adc_pots.c
 )
 
@@ -113,6 +160,34 @@ if(ENABLE_WS2812)
     )
 endif()
 
+# Optional MPR121 capacitive touch (pico-mpr121 from third_party)
+set(PICO_MPR121_PATH "${PROJECT_ROOT}/third_party/pico-mpr121")
+if(ENABLE_MPR121 AND EXISTS "${PICO_MPR121_PATH}/lib/CMakeLists.txt")
+    add_subdirectory(${PICO_MPR121_PATH}/lib mpr121)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_MPR121)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/dev/mpr121_touch.c
+    )
+    target_link_libraries(${PROJECT_NAME}.elf PRIVATE pico-mpr121)
+    message(STATUS "MPR121 touch support enabled (pico-mpr121)")
+elseif(ENABLE_MPR121)
+    message(WARNING "ENABLE_MPR121 is ON but third_party/pico-mpr121 not found; run git submodule update --init --recursive")
+endif()
+
+# MultiButton input backend (third_party)
+set(MULTIBUTTON_PATH "${PROJECT_ROOT}/third_party/multibutton")
+if(EXISTS "${MULTIBUTTON_PATH}/multi_button.c" AND EXISTS "${MULTIBUTTON_PATH}/multi_button.h")
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        ${MULTIBUTTON_PATH}/multi_button.c
+    )
+    target_include_directories(${PROJECT_NAME}.elf PRIVATE
+        ${MULTIBUTTON_PATH}
+    )
+else()
+    message(WARNING "third_party/multibutton not found; forcing UI_INPUT_ENABLED=0")
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE UI_INPUT_ENABLED=0)
+endif()
+
 # Optional SSD1306 OLED (u8g2) support
 if(ENABLE_OLED)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
@@ -121,45 +196,13 @@ if(ENABLE_OLED)
     )
 
     set(U8G2_CSRC_DIR "${PROJECT_ROOT}/third_party/u8g2/csrc")
+    include(${CMAKE_CURRENT_LIST_DIR}/u8g2_sources.cmake)
 
     target_sources(${PROJECT_NAME}.elf PRIVATE
         src/dev/oled.c
         src/dev/u8g2_pico.c
         src/multicore_display.c
-
-        # u8g2 core (subset)
-        ${U8G2_CSRC_DIR}/u8g2_arc.c
-        ${U8G2_CSRC_DIR}/u8g2_bitmap.c
-        ${U8G2_CSRC_DIR}/u8g2_box.c
-        ${U8G2_CSRC_DIR}/u8g2_buffer.c
-        ${U8G2_CSRC_DIR}/u8g2_circle.c
-        ${U8G2_CSRC_DIR}/u8g2_cleardisplay.c
-        ${U8G2_CSRC_DIR}/u8g2_d_memory.c
-        ${U8G2_CSRC_DIR}/u8g2_d_setup.c
-        ${U8G2_CSRC_DIR}/u8g2_font.c
-        ${U8G2_CSRC_DIR}/u8g2_fonts.c
-        ${U8G2_CSRC_DIR}/u8g2_hvline.c
-        ${U8G2_CSRC_DIR}/u8g2_intersection.c
-        ${U8G2_CSRC_DIR}/u8g2_kerning.c
-        ${U8G2_CSRC_DIR}/u8g2_line.c
-        ${U8G2_CSRC_DIR}/u8g2_ll_hvline.c
-        ${U8G2_CSRC_DIR}/u8g2_message.c
-        ${U8G2_CSRC_DIR}/u8g2_polygon.c
-        ${U8G2_CSRC_DIR}/u8g2_setup.c
-
-        # u8x8 core + SSD1306 driver
-        ${U8G2_CSRC_DIR}/u8x8_8x8.c
-        ${U8G2_CSRC_DIR}/u8x8_byte.c
-        ${U8G2_CSRC_DIR}/u8x8_cad.c
-        ${U8G2_CSRC_DIR}/u8x8_display.c
-        ${U8G2_CSRC_DIR}/u8x8_fonts.c
-        ${U8G2_CSRC_DIR}/u8x8_gpio.c
-        ${U8G2_CSRC_DIR}/u8x8_message.c
-        ${U8G2_CSRC_DIR}/u8x8_setup.c
-        ${U8G2_CSRC_DIR}/u8x8_string.c
-        ${U8G2_CSRC_DIR}/u8x8_u16toa.c
-        ${U8G2_CSRC_DIR}/u8x8_u8toa.c
-        ${U8G2_CSRC_DIR}/u8x8_d_ssd1306_128x64_noname.c
+        ${U8G2_CORE_SOURCES}
     )
 
     target_include_directories(${PROJECT_NAME}.elf PRIVATE
@@ -173,66 +216,39 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/dev
 )
 
-# USB configuration: either pico_stdio_usb (default) or custom TinyUSB (MIDI and/or Audio)
-if(ENABLE_USB_MIDI OR ENABLE_USB_AUDIO)
-    # Custom TinyUSB for composite USB device (CDC + optional MIDI + optional Audio)
-    
-    # Enable TinyUSB device library (this sets up all the necessary flags)
-    set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
-    
-    # Define that we're using TinyUSB device mode
-    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE 
-        LIB_TINYUSB_DEVICE=1
-    )
+# USB configuration: always use TinyUSB device stack, with optional MIDI/Audio interfaces.
+#
+# Rationale:
+# - pico_stdio_usb owns USB (descriptors, background tud_task) and does not scale to composite devices.
+# - Our firmware must use one stable USB stack in all builds; feature flags only toggle interfaces.
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    tinyusb_device
+    tinyusb_board
+)
 
-    if(ENABLE_USB_MIDI)
-        target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_MIDI)
-    endif()
+target_sources(${PROJECT_NAME}.elf PRIVATE
+    src/usb/usb_descriptors.c
+    src/usb/usb_cdc.c
+)
 
-    if(ENABLE_USB_AUDIO)
-        target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_AUDIO)
-    endif()
-    
-    # Include tusb_config.h from src directory
-    target_include_directories(${PROJECT_NAME}.elf PUBLIC 
-        ${CMAKE_CURRENT_LIST_DIR}/src
-    )
-    
-    # Link TinyUSB device stack
-    target_link_libraries(${PROJECT_NAME}.elf PRIVATE
-        tinyusb_device
-        tinyusb_board
-    )
-    
-    # USB source files
-    target_sources(${PROJECT_NAME}.elf PRIVATE
-        src/usb/usb_descriptors.c
-        src/usb/usb_cdc.c
-    )
+if(ENABLE_USB_MIDI)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_MIDI)
+    target_sources(${PROJECT_NAME}.elf PRIVATE src/usb/usb_midi.c)
+endif()
 
-    if(ENABLE_USB_MIDI)
-        target_sources(${PROJECT_NAME}.elf PRIVATE
-            src/usb/usb_midi.c
-        )
-    endif()
+if(ENABLE_USB_AUDIO)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_USB_AUDIO)
+    target_sources(${PROJECT_NAME}.elf PRIVATE src/usb/usb_audio.c)
+endif()
 
-    if(ENABLE_USB_AUDIO)
-        target_sources(${PROJECT_NAME}.elf PRIVATE
-            src/usb/usb_audio.c
-        )
-    endif()
-    
-    if(ENABLE_USB_MIDI AND ENABLE_USB_AUDIO)
-        message(STATUS "USB enabled: Using custom TinyUSB (CDC+MIDI+Audio)")
-    elseif(ENABLE_USB_MIDI)
-        message(STATUS "USB enabled: Using custom TinyUSB (CDC+MIDI)")
-    elseif(ENABLE_USB_AUDIO)
-        message(STATUS "USB enabled: Using custom TinyUSB (CDC+Audio)")
-    endif()
+if(ENABLE_USB_MIDI AND ENABLE_USB_AUDIO)
+    message(STATUS "USB enabled: TinyUSB composite (CDC+MIDI+Audio)")
+elseif(ENABLE_USB_MIDI)
+    message(STATUS "USB enabled: TinyUSB composite (CDC+MIDI)")
+elseif(ENABLE_USB_AUDIO)
+    message(STATUS "USB enabled: TinyUSB composite (CDC+Audio)")
 else()
-    # Default: use pico_stdio_usb (CDC only, simpler)
-    pico_enable_stdio_usb(${PROJECT_NAME}.elf 1)
-    message(STATUS "USB custom stack disabled: Using pico_stdio_usb (CDC only)")
+    message(STATUS "USB enabled: TinyUSB (CDC only)")
 endif()
 
 # Link libraries (pico_multicore for multicore_launch_core1; pico_util for queue_t; hardware_adc for pots)
@@ -243,6 +259,7 @@ target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     pico_util
     hardware_dma
     hardware_i2c
+    hardware_spi
     hardware_pwm
     hardware_clocks
     hardware_pio

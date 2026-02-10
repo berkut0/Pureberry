@@ -31,33 +31,52 @@ DEFAULT_LOG_LEVEL = "normal"
 
 # CMake feature options exposed as first-class CLI flags.
 # These are declared as `option(...)` in `core/CMakeLists.txt`.
+# Single-argument semantics:
+# - Defaults come from CMake when flag is omitted.
+# - WS2812 is ON by default -> provide --no-ws2812 to disable.
+# - Other features are OFF by default -> provide --<feature> to enable.
 FEATURE_OPTIONS = [
+    {
+        "flag": "--no-ws2812",
+        "cmake_var": "ENABLE_WS2812",
+        "action": "store_false",
+        "help": "Disable WS2812 LED support (CMake: ENABLE_WS2812).",
+    },
     {
         "flag": "--usb-midi",
         "cmake_var": "ENABLE_USB_MIDI",
+        "action": "store_true",
         "help": "Enable USB MIDI support (CMake: ENABLE_USB_MIDI).",
     },
     {
         "flag": "--usb-audio",
         "cmake_var": "ENABLE_USB_AUDIO",
-        "help": "Enable USB Audio device mode (CMake: ENABLE_USB_AUDIO).",
-    },
-    {
-        "flag": "--ws2812",
-        "cmake_var": "ENABLE_WS2812",
-        "help": "Enable WS2812 LED support (CMake: ENABLE_WS2812).",
+        "action": "store_true",
+        "help": "Enable USB Audio support (CMake: ENABLE_USB_AUDIO).",
     },
     {
         "flag": "--oled",
         "cmake_var": "ENABLE_OLED",
+        "action": "store_true",
         "help": "Enable SSD1306 OLED support (CMake: ENABLE_OLED).",
+    },
+    {
+        "flag": "--mpr121",
+        "cmake_var": "ENABLE_MPR121",
+        "action": "store_true",
+        "help": "Enable MPR121 capacitive touch support (CMake: ENABLE_MPR121).",
     },
     {
         "flag": "--i2c-dma",
         "cmake_var": "ENABLE_I2C_DMA",
+        "action": "store_true",
         "help": "Enable non-blocking I2C TX via DMA helper (CMake: ENABLE_I2C_DMA).",
     },
 ]
+
+# RP2350 overclock presets exposed as convenience CLI flags.
+FW_SYS_CLOCK_PROFILE_OC_240MHZ = "FW_SYS_CLOCK_PROFILE_OC_240MHZ"
+DEFAULT_OC_FLASH_SPI_CLKDIV = "4"
 
 # Console verbosity mapping. File logging follows selected log level.
 LOG_LEVELS = {
@@ -531,6 +550,199 @@ def resolve_host_compilers(logger: logging.Logger) -> Tuple[Optional[str], Optio
     return None, None
 
 
+def _exe_suffix() -> str:
+    return ".exe" if os.name == "nt" else ""
+
+
+def _venv_bin_dir(venv_root: Path) -> Path:
+    return venv_root / ("Scripts" if os.name == "nt" else "bin")
+
+
+def _is_python_launcher_exe(exe_path: Path) -> bool:
+    """
+    Detect distlib launcher stubs (pip-generated *.exe wrappers on Windows).
+
+    We prefer a real ninja binary for CMAKE_MAKE_PROGRAM to avoid launcher
+    recursion in mixed Python installations.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        with exe_path.open("rb") as f:
+            # Launcher stubs contain this stable marker near the front.
+            head = f.read(262_144)
+        return b"Fatal error in launcher" in head
+    except OSError:
+        return False
+
+
+def resolve_ninja_make_program(logger: logging.Logger) -> Optional[str]:
+    """
+    Resolve a standalone ninja executable path (not a Python launcher stub).
+
+    Returns:
+      - absolute path to usable ninja executable
+      - None if no safe candidate is found
+    """
+    ninja_name = f"ninja{_exe_suffix()}"
+    candidates: List[Path] = []
+    seen = set()
+
+    def _add_candidate(path_like: Optional[str]) -> None:
+        if not path_like:
+            return
+        try:
+            p = Path(path_like).resolve()
+        except Exception:
+            p = Path(path_like)
+        if not p.exists():
+            return
+        key = str(p).lower() if os.name == "nt" else str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(p)
+
+    # Prefer isolated env first (active venv, then repo-local venv).
+    active_venv = os.environ.get("VIRTUAL_ENV", "").strip().strip('"')
+    if active_venv:
+        _add_candidate(str(_venv_bin_dir(Path(active_venv)) / ninja_name))
+
+    _add_candidate(str(_venv_bin_dir(get_project_root() / "venv") / ninja_name))
+
+    # Then PATH / interpreter-adjacent locations.
+    _add_candidate(shutil.which("ninja"))
+    _add_candidate(shutil.which("ninja-build"))
+    _add_candidate(str(Path(sys.executable).resolve().parent / ninja_name))
+    if os.name == "nt":
+        # Typical system Ninja location on Windows.
+        _add_candidate(r"C:\ProgramData\chocolatey\bin\ninja.exe")
+
+    for candidate in candidates:
+        if _is_python_launcher_exe(candidate):
+            logger.warning("Skipping Python launcher stub for Ninja: %s", candidate)
+            continue
+        logger.debug("Using Ninja executable: %s", candidate)
+        return str(candidate)
+
+    if candidates:
+        logger.error("Found only Python launcher stubs for Ninja, no standalone ninja binary.")
+        for candidate in candidates:
+            logger.error("  candidate: %s", candidate)
+    else:
+        logger.error("ninja executable not found.")
+    logger.error(
+        "Install/use a real Ninja binary (e.g. venv Scripts/ninja.exe or Chocolatey Ninja) and retry."
+    )
+    return None
+
+
+def _find_in_pico_toolchain_path(exe_stem: str, logger: logging.Logger) -> Optional[str]:
+    """
+    Search for `exe_stem` under PICO_TOOLCHAIN_PATH.
+
+    Pico SDK expects PICO_TOOLCHAIN_PATH to point to the toolchain root and searches
+    `${PICO_TOOLCHAIN_PATH}/bin` for compilers.
+    """
+    pico_toolchain_path = os.environ.get("PICO_TOOLCHAIN_PATH", "").strip().strip('"')
+    if not pico_toolchain_path:
+        return None
+
+    toolchain_root = Path(pico_toolchain_path)
+    candidate = toolchain_root / "bin" / f"{exe_stem}{_exe_suffix()}"
+    if candidate.exists():
+        return str(candidate)
+
+    # Common mistake: set PICO_TOOLCHAIN_PATH to ".../bin" instead of the toolchain root.
+    candidate = toolchain_root / f"{exe_stem}{_exe_suffix()}"
+    if candidate.exists():
+        logger.warning(
+            "PICO_TOOLCHAIN_PATH looks like a bin directory; expected toolchain root (containing bin/). Value: %s",
+            toolchain_root,
+        )
+        return str(candidate)
+
+    return None
+
+
+def preflight_check_toolchains(
+    logger: logging.Logger,
+    forced_make_program: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Check for external toolchains that are not installed via requirements.txt.
+
+    - ARM cross compiler: required for firmware build (arm-none-eabi-*)
+    - Host C/C++ compiler: required to build Pico SDK host tools (e.g. pioasm)
+    """
+    ok = True
+
+    arm_gcc = shutil.which("arm-none-eabi-gcc") or _find_in_pico_toolchain_path(
+        "arm-none-eabi-gcc", logger
+    )
+    arm_gxx = shutil.which("arm-none-eabi-g++") or _find_in_pico_toolchain_path(
+        "arm-none-eabi-g++", logger
+    )
+
+    if arm_gcc:
+        logger.info("ARM GCC: %s", arm_gcc)
+    else:
+        logger.error("arm-none-eabi-gcc not found (required).")
+        ok = False
+
+    if arm_gxx:
+        logger.info("ARM G++: %s", arm_gxx)
+    else:
+        logger.error("arm-none-eabi-g++ not found (required).")
+        ok = False
+
+    if not ok:
+        logger.error("Install GNU Arm Embedded Toolchain and ensure it's in PATH, or set PICO_TOOLCHAIN_PATH.")
+
+    ninja_make_program: Optional[str] = None
+    if forced_make_program:
+        candidate = Path(forced_make_program).expanduser()
+        if candidate.exists():
+            candidate = candidate.resolve()
+            if _is_python_launcher_exe(candidate):
+                logger.warning("Configured CMAKE_MAKE_PROGRAM looks like a Python launcher stub: %s", candidate)
+            ninja_make_program = str(candidate)
+            logger.info("Ninja (from CMAKE_MAKE_PROGRAM): %s", ninja_make_program)
+        else:
+            logger.error("Configured CMAKE_MAKE_PROGRAM does not exist: %s", candidate)
+            ok = False
+    else:
+        ninja_make_program = resolve_ninja_make_program(logger)
+        if ninja_make_program:
+            logger.info("Ninja: %s", ninja_make_program)
+        else:
+            ok = False
+
+    # Host compiler for Pico SDK tools (pioasm, etc.). The build prefers GCC if present;
+    # otherwise CMake will pick a suitable toolchain (e.g. clang++ or MSVC).
+    host_cc = shutil.which("gcc")
+    host_cxx = shutil.which("g++")
+    if host_cc and host_cxx:
+        logger.info("Host compiler (GCC): %s / %s", host_cc, host_cxx)
+    else:
+        detected_cxx = (
+            shutil.which("clang++")
+            or shutil.which("cl")
+            or shutil.which("g++")
+        )
+        if detected_cxx:
+            logger.info("Host C++ compiler (CMake default): %s", detected_cxx)
+        else:
+            logger.warning(
+                "Host C++ compiler not found on PATH (clang++/g++/cl). Pico SDK builds host tools (e.g. pioasm) during configure."
+            )
+            logger.warning(
+                "Install LLVM (clang) or Visual Studio Build Tools, or run from a Developer Command Prompt."
+            )
+
+    return ok, ninja_make_program
+
+
 def find_uf2_file(build_dir: Path) -> Optional[Path]:
     """Find UF2 output file with common naming patterns."""
     preferred = [
@@ -549,6 +761,7 @@ def build_firmware(
     build_dir: Path,
     heavy_sources_file: Path,
     logger: logging.Logger,
+    ninja_make_program: str,
     log_level: str = DEFAULT_LOG_LEVEL,
     cmake_defines: Optional[List[str]] = None,
 ) -> bool:
@@ -561,7 +774,6 @@ def build_firmware(
     pico_sdk_path = resolve_pico_sdk_path(project_root, logger)
     pico_extras_path = resolve_pico_extras_path(project_root)
     gcc_path, gxx_path = resolve_host_compilers(logger)
-
     cmake_args = [
         "cmake",
         "-G",
@@ -571,6 +783,7 @@ def build_firmware(
         "-B",
         str(build_dir),
         "-DPICO_BOARD=waveshare_rp2350_zero",
+        f"-DCMAKE_MAKE_PROGRAM={ninja_make_program}",
     ]
 
     if pico_sdk_path:
@@ -584,6 +797,9 @@ def build_firmware(
 
     if cmake_defines:
         for define in cmake_defines:
+            if define.startswith("CMAKE_MAKE_PROGRAM=") or define.startswith("CMAKE_MAKE_PROGRAM:"):
+                logger.debug("Ignoring duplicate user define for CMAKE_MAKE_PROGRAM; using preflight-selected path.")
+                continue
             cmake_args.append(f"-D{define}")
             logger.debug("CMake define: %s", define)
 
@@ -654,6 +870,24 @@ def _upsert_cmake_define(defines: List[str], var: str, value: str) -> None:
     defines.append(f"{var}={value}")
 
 
+def _extract_cmake_define(defines: Sequence[str], var: str) -> Optional[str]:
+    """
+    Return the last explicit value of `var` from a list of `-D` defines.
+
+    Supports:
+    - VAR=VALUE
+    - VAR:TYPE=VALUE
+    """
+    for define in reversed(list(defines)):
+        if define.startswith(f"{var}="):
+            return define.split("=", 1)[1]
+        if define.startswith(f"{var}:"):
+            left, sep, right = define.partition("=")
+            if sep and left.startswith(f"{var}:"):
+                return right
+    return None
+
+
 def _cmake_on_off(value: bool) -> str:
     return "ON" if value else "OFF"
 
@@ -714,14 +948,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--clean",
         action="store_true",
-        default=True,
-        help="Clean build directory before building (default: True)",
+        default=False,
+        help="Clean build directory before building (default: False)",
     )
     parser.add_argument(
         "--no-clean",
         dest="clean",
         action="store_false",
-        help="Don't clean build directory before building",
+        help="Don't clean build directory before building (default)",
     )
     parser.add_argument(
         "-D",
@@ -739,15 +973,26 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help_text = feature["help"]
         dest = cmake_var.lower()
 
-        # Python 3.9+ provides a nice standard way to support both
-        # `--foo` and `--no-foo` without defining two arguments.
+        # Single-argument flags: when omitted, defer to CMake defaults.
         feature_group.add_argument(
             flag,
             dest=dest,
-            action=argparse.BooleanOptionalAction,
+            action=feature["action"],
             default=None,
             help=help_text,
         )
+
+    clock_group = parser.add_argument_group("Clock options")
+    clock_group.add_argument(
+        "--overclocked",
+        action="store_true",
+        default=False,
+        help=(
+            "Force RP2350 OC profile (240 MHz) via CMake override "
+            "(FW_SYS_CLOCK_PROFILE_OVERRIDE=FW_SYS_CLOCK_PROFILE_OC_240MHZ). "
+            "Also sets PICO_FLASH_SPI_CLKDIV=4 unless already provided via -D."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -829,6 +1074,33 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             continue
         _upsert_cmake_define(cmake_defines, cmake_var, _cmake_on_off(bool(value)))
 
+    if args.overclocked:
+        _upsert_cmake_define(
+            cmake_defines,
+            "FW_SYS_CLOCK_PROFILE_OVERRIDE",
+            FW_SYS_CLOCK_PROFILE_OC_240MHZ,
+        )
+        if _extract_cmake_define(cmake_defines, "PICO_FLASH_SPI_CLKDIV") is None:
+            _upsert_cmake_define(
+                cmake_defines,
+                "PICO_FLASH_SPI_CLKDIV",
+                DEFAULT_OC_FLASH_SPI_CLKDIV,
+            )
+            logger.info(
+                "--overclocked: forcing FW_SYS_CLOCK_PROFILE override and defaulting PICO_FLASH_SPI_CLKDIV=%s",
+                DEFAULT_OC_FLASH_SPI_CLKDIV,
+            )
+        else:
+            logger.info(
+                "--overclocked: forcing FW_SYS_CLOCK_PROFILE override (keeping user-provided PICO_FLASH_SPI_CLKDIV)",
+            )
+    elif _extract_cmake_define(cmake_defines, "FW_SYS_CLOCK_PROFILE_OVERRIDE") is None:
+        # Keep default behavior deterministic across re-configures:
+        # if --overclocked is not used, explicitly clear override so config.h/local config is respected.
+        _upsert_cmake_define(cmake_defines, "FW_SYS_CLOCK_PROFILE_OVERRIDE", "")
+
+    forced_make_program = _extract_cmake_define(cmake_defines, "CMAKE_MAKE_PROGRAM")
+
     firmware_build_dir = build_dir / "firmware-build"
 
     # If build dir is locked and --clean is enabled, we already tried cleaning above.
@@ -841,12 +1113,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
         firmware_build_dir = alt_build_dir
 
+    with log_step(logger, "Preflight: toolchains"):
+        preflight_ok, ninja_make_program = preflight_check_toolchains(
+            logger,
+            forced_make_program,
+        )
+        if not preflight_ok or not ninja_make_program:
+            raise SystemExit(1)
+
     with log_step(logger, "Build firmware"):
         if not build_firmware(
             firmware_source_dir,
             firmware_build_dir,
             manifest_path,
             logger,
+            ninja_make_program,
             log_level,
             cmake_defines,
         ):

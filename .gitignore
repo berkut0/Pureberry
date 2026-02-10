@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+build_verify/
 out/
 *.uf2
 *.bin
@@ -33,6 +34,7 @@ ENV/
 # Cursor IDE
 .cursor/
 *.mdc
+AGENTS.md
 
 # OS
 .DS_Store

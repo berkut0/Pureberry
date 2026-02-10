@@ -2,252 +2,61 @@
 
 #ifdef ENABLE_OLED
 
-#include <stdio.h>
 #include <string.h>
 
-#include "hardware/gpio.h"
-#include "hardware/i2c.h"
 #include "pico/stdlib.h"
-#include "pico/time.h"
 
 #include "config.h"
-#include "crash.h"
 #include "dev/u8g2_pico.h"
-#include "multicore_display.h"
-
-#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
-#include "tusb.h"
-#endif
-
-#ifdef ENABLE_USB_AUDIO
-#include "usb/usb_audio.h"
-#endif
+#include "drv/i2c_bus.h"
 
 #ifdef ENABLE_I2C_DMA
-#include "drv/i2c_dma.h"
 #include "hardware/regs/i2c.h"
 #endif
 
 static u8g2_t g_u8g2;
 static bool g_oled_ready;
-static absolute_time_t g_next_frame;
-static uint32_t g_frame_counter;
-
-#define OLED_CRASH_SCREEN_MS 5000
-static bool g_show_crash_screen;
-static absolute_time_t g_crash_screen_until;
-static crash_info_t g_crash_info;
 
 #ifdef ENABLE_I2C_DMA
-static i2c_dma_t g_oled_i2c_dma;
-static bool g_oled_i2c_dma_ready;
+static bool g_oled_dma_ready;
+static uint32_t g_oled_cmd_window[7];
 
 enum { OLED_FB_LEN = OLED_WIDTH * (OLED_HEIGHT / 8) };
-static uint32_t g_oled_cmd_window[7];
 static uint32_t g_oled_cmd_data[1 + OLED_FB_LEN];
-#endif
 
-static i2c_inst_t *oled_get_i2c(void) {
-#if OLED_I2C_INSTANCE == 0
-    return i2c0;
-#else
-    return i2c1;
-#endif
-}
-
-static void oled_i2c_bus_recover(void) {
-    // Basic I2C bus recovery:
-    // If a slave is holding SDA low, toggle SCL to advance it, then issue a STOP.
-    gpio_init(OLED_I2C_SDA_PIN);
-    gpio_init(OLED_I2C_SCL_PIN);
-    gpio_pull_up(OLED_I2C_SDA_PIN);
-    gpio_pull_up(OLED_I2C_SCL_PIN);
-
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_IN);
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_IN);
-    sleep_us(5);
-
-    if (gpio_get(OLED_I2C_SDA_PIN) != 0) {
-        return; // bus not stuck
-    }
-
-    // Clock out up to 9 pulses on SCL.
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_OUT);
-    for (int i = 0; i < 9; i++) {
-        gpio_put(OLED_I2C_SCL_PIN, 0);
-        sleep_us(5);
-        gpio_put(OLED_I2C_SCL_PIN, 1);
-        sleep_us(5);
-        if (gpio_get(OLED_I2C_SDA_PIN) != 0) break;
-    }
-
-    // Generate STOP: SDA low -> SCL high -> SDA high.
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_OUT);
-    gpio_put(OLED_I2C_SDA_PIN, 0);
-    sleep_us(5);
-    gpio_put(OLED_I2C_SCL_PIN, 1);
-    sleep_us(5);
-    gpio_put(OLED_I2C_SDA_PIN, 1);
-    sleep_us(5);
-
-    // Release lines.
-    gpio_set_dir(OLED_I2C_SDA_PIN, GPIO_IN);
-    gpio_set_dir(OLED_I2C_SCL_PIN, GPIO_IN);
-}
-
-static inline void oled_usb_service(void) {
-#if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
-    tud_task();
-#ifdef ENABLE_USB_AUDIO
-    usb_audio_task();
-#endif
-#endif
-}
-
-static bool oled_i2c_write_timeout(const uint8_t *data, size_t len) {
-    if (len == 0) return true;
-    i2c_inst_t *i2c = oled_get_i2c();
-    int written = i2c_write_timeout_us(
-        i2c,
-        (uint8_t)OLED_I2C_ADDR,
-        data,
-        (int)len,
-        false,
-        OLED_I2C_TIMEOUT_US
-    );
-    return written == (int)len;
-}
-
-static bool oled_ssd1306_cmds(const uint8_t *cmds, size_t cmd_len) {
-    if (cmd_len == 0) return true;
-    uint8_t tx[1 + 16];
-    if (cmd_len > 16) return false;
-    tx[0] = 0x00; // command stream
-    memcpy(&tx[1], cmds, cmd_len);
-    return oled_i2c_write_timeout(tx, 1 + cmd_len);
-}
-
-static void oled_ssd1306_data(const uint8_t *data, size_t len) {
-    if (len == 0) return;
-    uint8_t tx[1 + OLED_I2C_STREAM_CHUNK_BYTES];
-    tx[0] = 0x40; // data stream
-    while (len > 0) {
-        size_t chunk = len;
-        if (chunk > (size_t)OLED_I2C_STREAM_CHUNK_BYTES) chunk = (size_t)OLED_I2C_STREAM_CHUNK_BYTES;
-        memcpy(&tx[1], data, chunk);
-        oled_usb_service();
-        (void)oled_i2c_write_timeout(tx, 1 + chunk);
-        data += chunk;
-        len -= chunk;
-    }
-}
-
-static void oled_send_buffer_pages(uint8_t first_page, uint8_t page_count) {
-    if (page_count == 0) return;
-    if (first_page >= 8) return;
-    if ((uint8_t)(first_page + page_count) > 8) page_count = (uint8_t)(8 - first_page);
-
-    uint8_t *fb = u8g2_GetBufferPtr(&g_u8g2);
-    if (!fb) return;
-
-    uint8_t last_page = (uint8_t)(first_page + page_count - 1);
-    const uint8_t set_window[] = {
-        0x21, 0x00, (uint8_t)(OLED_WIDTH - 1), // column addr [0..127]
-        0x22, first_page, last_page            // page addr [first..last]
-    };
-
-    oled_usb_service();
-    (void)oled_ssd1306_cmds(set_window, sizeof(set_window));
-
-    const uint8_t *src = fb + ((size_t)first_page * (size_t)OLED_WIDTH);
-    size_t remaining = (size_t)page_count * (size_t)OLED_WIDTH;
-
-    oled_ssd1306_data(src, remaining);
-}
-
-static void oled_send_buffer_pages_diff(uint8_t first_page, uint8_t page_count) {
-    if (page_count == 0) return;
-    if (first_page >= 8) return;
-    if ((uint8_t)(first_page + page_count) > 8) page_count = (uint8_t)(8 - first_page);
-    if (page_count > (uint8_t)OLED_STREAMING_PAGES) page_count = (uint8_t)OLED_STREAMING_PAGES;
-
-    uint8_t *fb = u8g2_GetBufferPtr(&g_u8g2);
-    if (!fb) return;
-
-    static uint8_t prev[OLED_WIDTH * OLED_STREAMING_PAGES];
-    static bool prev_valid;
-
-    for (uint8_t p = 0; p < page_count; p++) {
-        uint8_t page = (uint8_t)(first_page + p);
-        const uint8_t *cur = fb + ((size_t)page * (size_t)OLED_WIDTH);
-        uint8_t *old = prev + ((size_t)p * (size_t)OLED_WIDTH);
-
-        size_t x = 0;
-        while (x < (size_t)OLED_WIDTH) {
-            if (prev_valid) {
-                while (x < (size_t)OLED_WIDTH && old[x] == cur[x]) x++;
-                if (x >= (size_t)OLED_WIDTH) break;
-            }
-
-            size_t start = x;
-            while (x < (size_t)OLED_WIDTH && (!prev_valid || old[x] != cur[x])) {
-                old[x] = cur[x];
-                x++;
-            }
-            size_t end = x - 1;
-
-            uint8_t const set_window[] = {
-                0x21, (uint8_t)start, (uint8_t)end, // columns
-                0x22, page, page                     // one page
-            };
-            oled_usb_service();
-            (void)oled_ssd1306_cmds(set_window, sizeof(set_window));
-            oled_ssd1306_data(cur + start, end - start + 1);
-        }
-    }
-
-    prev_valid = true;
-}
-
-#ifdef ENABLE_I2C_DMA
-static bool oled_dma_queue_pages(uint8_t first_page, uint8_t page_count) {
-    if (!g_oled_i2c_dma_ready) return false;
-    if (page_count == 0) return false;
-    if (first_page >= 8) return false;
-    if ((uint8_t)(first_page + page_count) > 8) page_count = (uint8_t)(8 - first_page);
-    if (i2c_dma_busy(&g_oled_i2c_dma)) return false;
-
-    uint8_t last_page = (uint8_t)(first_page + page_count - 1);
+static bool oled_dma_prepare_window_cmds(void) {
     uint8_t const window_bytes[7] = {
         0x00,                                       // control byte: command stream
         0x21, 0x00, (uint8_t)(OLED_WIDTH - 1),       // column address
-        0x22, first_page, last_page                  // page address
+        0x22, 0x00, (uint8_t)((OLED_HEIGHT / 8) - 1) // page address
     };
-    if (i2c_dma_build_write_cmds(
-            g_oled_cmd_window,
-            sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
-            window_bytes,
-            sizeof(window_bytes),
-            false,
-            true) == 0) {
-        return false;
-    }
 
+    return i2c_dma_build_write_cmds(
+               g_oled_cmd_window,
+               sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]),
+               window_bytes,
+               sizeof(window_bytes),
+               false,
+               true) == (sizeof(g_oled_cmd_window) / sizeof(g_oled_cmd_window[0]));
+}
+
+static bool oled_queue_full_frame_dma(void) {
+    if (!g_oled_dma_ready) return false;
+    if (i2c_bus_dma_busy(OLED_I2C_BUS_ID)) return false;
+
+    // Build data transaction: control byte 0x40 + framebuffer bytes.
     uint8_t const *fb = u8g2_GetBufferPtr(&g_u8g2);
     if (!fb) return false;
-    size_t const offset = (size_t)first_page * (size_t)OLED_WIDTH;
-    size_t const len_bytes = (size_t)page_count * (size_t)OLED_WIDTH;
-    if (offset + len_bytes > (size_t)OLED_FB_LEN) return false;
-
     g_oled_cmd_data[0] = 0x40u; // control byte: data stream
-    for (size_t i = 0; i < len_bytes; i++) {
-        uint32_t v = (uint32_t)fb[offset + i] & 0xFFu;
-        if (i == (len_bytes - 1)) {
+    for (size_t i = 0; i < (size_t)OLED_FB_LEN; i++) {
+        uint32_t v = (uint32_t)fb[i] & 0xFFu;
+        if (i == (size_t)(OLED_FB_LEN - 1)) {
             v |= I2C_IC_DATA_CMD_STOP_BITS;
         }
         g_oled_cmd_data[1 + i] = v;
     }
 
+    // Queue window, then data. Use a generous timeout for the full-frame transfer.
     i2c_dma_txn_t t1 = {
         .addr7 = (uint8_t)OLED_I2C_ADDR,
         .cmds = g_oled_cmd_window,
@@ -259,36 +68,32 @@ static bool oled_dma_queue_pages(uint8_t first_page, uint8_t page_count) {
     i2c_dma_txn_t t2 = {
         .addr7 = (uint8_t)OLED_I2C_ADDR,
         .cmds = g_oled_cmd_data,
-        .cmd_count = 1u + len_bytes,
-        .timeout_us = (uint32_t)(20000u + (len_bytes * 50u)),
+        .cmd_count = sizeof(g_oled_cmd_data) / sizeof(g_oled_cmd_data[0]),
+        .timeout_us = 50000u,
         .done = NULL,
         .user = NULL,
     };
 
-    if (!i2c_dma_submit(&g_oled_i2c_dma, &t1)) return false;
-    if (!i2c_dma_submit(&g_oled_i2c_dma, &t2)) return false;
+    if (!i2c_bus_dma_submit(OLED_I2C_BUS_ID, &t1)) return false;
+    if (!i2c_bus_dma_submit(OLED_I2C_BUS_ID, &t2)) return false;
     return true;
 }
 #endif
 
-static void oled_flush_full(void) {
+void oled_backend_flush(void) {
+    if (!g_oled_ready) return;
+
 #ifdef ENABLE_I2C_DMA
-    if (g_oled_i2c_dma_ready) {
-        (void)oled_dma_queue_pages(0, 8);
+    if (g_oled_dma_ready) {
+        (void)oled_queue_full_frame_dma();
         return;
     }
 #endif
     u8g2_SendBuffer(&g_u8g2);
 }
 
-static void oled_flush_streaming(void) {
-#ifdef ENABLE_I2C_DMA
-    if (g_oled_i2c_dma_ready) {
-        (void)oled_dma_queue_pages(0, (uint8_t)OLED_STREAMING_PAGES);
-        return;
-    }
-#endif
-    oled_send_buffer_pages_diff(0, (uint8_t)OLED_STREAMING_PAGES);
+static i2c_inst_t *oled_get_i2c(void) {
+    return i2c_bus_get_inst((i2c_bus_id_t)OLED_I2C_BUS_ID);
 }
 
 static void oled_draw_boot(void) {
@@ -296,193 +101,33 @@ static void oled_draw_boot(void) {
     u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
     u8g2_DrawStr(&g_u8g2, 0, 12, "SSD1306 OLED");
     u8g2_DrawStr(&g_u8g2, 0, 26, "u8g2 + Pico");
-    u8g2_SendBuffer(&g_u8g2);
+    oled_backend_flush();
 }
 
-static const char *oled_crash_reason_txt(crash_reason_t r) {
-    switch (r) {
-        case CRASH_REASON_HARDFAULT:
-            return "HF";
-        case CRASH_REASON_PANIC:
-            return "PANIC";
-        default:
-            return "?";
-    }
-}
-
-static void oled_draw_crash_screen(const crash_info_t *info) {
-    u8g2_ClearBuffer(&g_u8g2);
-    u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
-
-    char line[32];
-    snprintf(
-        line,
-        sizeof(line),
-        "CRASH %s c%u",
-        oled_crash_reason_txt(info->reason),
-        (unsigned)info->core_id
-    );
-    u8g2_DrawStr(&g_u8g2, 0, 10, line);
-
-    snprintf(line, sizeof(line), "pc 0x%08lX", (unsigned long)info->pc);
-    u8g2_DrawStr(&g_u8g2, 0, 20, line);
-
-    if (info->reason == CRASH_REASON_PANIC) {
-        // For PANIC we store the fmt pointer in lr.
-        snprintf(line, sizeof(line), "fmt 0x%08lX", (unsigned long)info->lr);
-    } else {
-        snprintf(line, sizeof(line), "lr 0x%08lX", (unsigned long)info->lr);
-    }
-    u8g2_DrawStr(&g_u8g2, 0, 30, line);
-
-    if (info->reason == CRASH_REASON_PANIC) {
-        snprintf(line, sizeof(line), "arg0 0x%08lX", (unsigned long)info->arg0);
-    } else {
-        snprintf(line, sizeof(line), "cfsr 0x%08lX", (unsigned long)info->cfsr);
-    }
-    u8g2_DrawStr(&g_u8g2, 0, 40, line);
-
-    snprintf(line, sizeof(line), "hfsr 0x%08lX", (unsigned long)info->hfsr);
-    u8g2_DrawStr(&g_u8g2, 0, 50, line);
-
-    if (info->cfsr & (1u << 15)) {
-        snprintf(line, sizeof(line), "bfar 0x%08lX", (unsigned long)info->bfar);
-    } else {
-        snprintf(line, sizeof(line), "bfar n/a");
-    }
-    u8g2_DrawStr(&g_u8g2, 0, 60, line);
-
-    u8g2_SendBuffer(&g_u8g2);
-}
-
-static void oled_draw_waveform(const uint8_t y[128]) {
-    u8g2_ClearBuffer(&g_u8g2);
-    u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
-
-    char line[32];
-    snprintf(line, sizeof(line), "frame %lu", (unsigned long)g_frame_counter);
-    u8g2_DrawStr(&g_u8g2, 0, 10, line);
-
-#ifdef ENABLE_USB_AUDIO
-    {
-        const uint32_t sr = usb_audio_get_sample_rate();
-        const char *sr_txt = (sr == 44100u) ? "44.1k" : (sr == 48000u) ? "48k" : "?";
-
-        char usb_line1[32];
-        snprintf(
-            usb_line1,
-            sizeof(usb_line1),
-            "USB%s A%u s%d i%lu",
-            sr_txt,
-            (unsigned)usb_audio_get_last_alt_setting(),
-            (int)usb_audio_is_streaming(),
-            (unsigned long)usb_audio_get_set_itf_count()
-        );
-        u8g2_DrawStr(&g_u8g2, 0, 20, usb_line1);
-
-        char usb_line2[32];
-        if (usb_audio_is_streaming()) {
-            snprintf(
-                usb_line2,
-                sizeof(usb_line2),
-                "r%lu a%lu u%lu",
-                (unsigned long)usb_audio_get_ring_fill_frames(),
-                (unsigned long)usb_audio_get_last_avail_bytes(),
-                (unsigned long)usb_audio_get_underrun_count()
-            );
-        } else {
-            snprintf(
-                usb_line2,
-                sizeof(usb_line2),
-                "rq%02X cs%02X e%02X l%04X",
-                (unsigned)usb_audio_get_last_req_bRequest(),
-                (unsigned)usb_audio_get_last_req_control_selector(),
-                (unsigned)usb_audio_get_last_req_entity_id(),
-                (unsigned)usb_audio_get_last_req_wLength()
-            );
-        }
-        u8g2_DrawStr(&g_u8g2, 0, 30, usb_line2);
-    }
-#endif
-
-    uint8_t prev_y = y[0];
-    for (int x = 0; x < 128; x++) {
-        uint8_t yy = y[x];
-        if (x > 0) {
-            u8g2_DrawLine(&g_u8g2, x - 1, prev_y, x, yy);
-        } else {
-            u8g2_DrawPixel(&g_u8g2, x, yy);
-        }
-        prev_y = yy;
-    }
-
-    oled_flush_full();
-}
-
-static void oled_draw_streaming_status(void) {
-    u8g2_ClearBuffer(&g_u8g2);
-    u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
-
-    char line[32];
-    snprintf(line, sizeof(line), "frame %lu", (unsigned long)g_frame_counter);
-    u8g2_DrawStr(&g_u8g2, 0, 10, line);
-
-#ifdef ENABLE_USB_AUDIO
-    const uint32_t sr = usb_audio_get_sample_rate();
-    const char *sr_txt = (sr == 44100u) ? "44.1k" : (sr == 48000u) ? "48k" : "?";
-
-    char usb_line1[32];
-    snprintf(
-        usb_line1,
-        sizeof(usb_line1),
-        "USB%s A%u s%d i%lu",
-        sr_txt,
-        (unsigned)usb_audio_get_last_alt_setting(),
-        (int)usb_audio_is_streaming(),
-        (unsigned long)usb_audio_get_set_itf_count()
-    );
-    u8g2_DrawStr(&g_u8g2, 0, 20, usb_line1);
-
-    char usb_line2[32];
-    snprintf(
-        usb_line2,
-        sizeof(usb_line2),
-        "r%lu a%lu u%lu",
-        (unsigned long)usb_audio_get_ring_fill_frames(),
-        (unsigned long)usb_audio_get_last_avail_bytes(),
-        (unsigned long)usb_audio_get_underrun_count()
-    );
-    u8g2_DrawStr(&g_u8g2, 0, 30, usb_line2);
-#endif
-
-    // Update only the top part of the display while USB audio is streaming.
-    oled_flush_streaming();
-}
-
-bool oled_init(void) {
-    i2c_inst_t *i2c = oled_get_i2c();
+bool oled_backend_init(void) {
+    if (g_oled_ready) return true;
 
     // If the bus is stuck (e.g., SDA held low), recover first so init cannot hang core0.
-    oled_i2c_bus_recover();
+    i2c_bus_recover((i2c_bus_id_t)OLED_I2C_BUS_ID);
 
-    // I2C pins
-    gpio_set_function(OLED_I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(OLED_I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(OLED_I2C_SDA_PIN);
-    gpio_pull_up(OLED_I2C_SCL_PIN);
+    if (!i2c_bus_init_once((i2c_bus_id_t)OLED_I2C_BUS_ID)) {
+        return false;
+    }
 
-    i2c_init(i2c, OLED_I2C_BAUD);
+    i2c_inst_t *i2c = oled_get_i2c();
+    if (!i2c) {
+        return false;
+    }
 
 #ifdef ENABLE_I2C_DMA
     // I2C DMA is used only for OLED refresh (TX). u8g2 init remains blocking and is OK at boot.
-    i2c_dma_init(&g_oled_i2c_dma, i2c, -1, 1);
-    g_oled_i2c_dma_ready = (g_oled_i2c_dma.dma_chan >= 0);
+    g_oled_dma_ready = i2c_bus_dma_init((i2c_bus_id_t)OLED_I2C_BUS_ID, -1, 1) && oled_dma_prepare_window_cmds();
 #endif
 
     // Setup u8g2 for SSD1306 I2C 128x64 (full framebuffer)
     u8g2_Setup_ssd1306_i2c_128x64_noname_f(&g_u8g2, U8G2_R0, u8x8_byte_pico_hw_i2c, u8x8_gpio_and_delay_pico);
     u8x8_SetUserPtr(u8g2_GetU8x8(&g_u8g2), i2c);
-    u8x8_SetI2CAddress(u8g2_GetU8x8(&g_u8g2), (uint8_t)(OLED_I2C_ADDR << 1));
+    u8x8_SetI2CAddress(u8g2_GetU8x8(&g_u8g2), (uint8_t) (OLED_I2C_ADDR << 1));
 
     // u8g2 init will perform I2C transactions; our backend uses timeouts to avoid hangs.
     u8g2_InitDisplay(&g_u8g2);
@@ -490,80 +135,24 @@ bool oled_init(void) {
 
     oled_draw_boot();
 
-    // If we rebooted after a fault/panic, show crash info for a few seconds.
-    crash_info_t info;
-    if (crash_read(&info)) {
-        g_crash_info = info;
-        crash_clear();
-        oled_draw_crash_screen(&g_crash_info);
-        g_show_crash_screen = true;
-        g_crash_screen_until = make_timeout_time_ms(OLED_CRASH_SCREEN_MS);
-    } else {
-        g_show_crash_screen = false;
-    }
-
     g_oled_ready = true;
-    g_next_frame = make_timeout_time_ms(250);
-    g_frame_counter = 0;
     return true;
 }
 
-void oled_task(void) {
-    if (!g_oled_ready) return;
+bool oled_backend_ready(void) {
+    return g_oled_ready;
+}
 
-    oled_usb_service();
-
-#ifdef ENABLE_I2C_DMA
-    if (g_oled_i2c_dma_ready) {
-        i2c_dma_poll(&g_oled_i2c_dma);
-    }
-#endif
-
-    absolute_time_t now = get_absolute_time();
-    if (g_show_crash_screen) {
-        if (absolute_time_diff_us(now, g_crash_screen_until) > 0) {
-            // Keep the crash screen visible without refreshing to minimize USB jitter.
-            return;
-        }
-        g_show_crash_screen = false;
-        g_next_frame = now;
-    }
-    if (absolute_time_diff_us(now, g_next_frame) > 0) {
-        return; // not yet
-    }
-    uint32_t fps = (uint32_t)OLED_REFRESH_FPS;
-#ifdef ENABLE_USB_AUDIO
-    if (usb_audio_is_streaming()) fps = (uint32_t)OLED_REFRESH_FPS_STREAMING;
-#endif
-    if (fps == 0u) fps = 1u;
-    g_next_frame = delayed_by_ms(now, (int32_t)(1000u / fps));
-    g_frame_counter++;
-
-#ifdef ENABLE_USB_AUDIO
-    if (usb_audio_is_streaming()) {
-        oled_draw_streaming_status();
-        return;
-    }
-#endif
-
-    uint8_t y[128];
-    if (multicore_display_read_latest(y)) {
-        oled_draw_waveform(y);
-    } else {
-        u8g2_ClearBuffer(&g_u8g2);
-        u8g2_SetFont(&g_u8g2, u8g2_font_6x10_tf);
-        u8g2_DrawStr(&g_u8g2, 0, 12, "Waiting waveform...");
-        u8g2_DrawFrame(&g_u8g2, 0, 20, OLED_WIDTH, OLED_HEIGHT - 20);
-        int x = (int)(g_frame_counter % (OLED_WIDTH - 6));
-        u8g2_DrawBox(&g_u8g2, x, 24, 6, 6);
-        oled_flush_full();
-    }
+oled_canvas_t *oled_backend_u8g2(void) {
+    if (!g_oled_ready) return NULL;
+    return &g_u8g2;
 }
 
 #else
 
-bool oled_init(void) { return false; }
-void oled_task(void) { (void)0; }
+bool oled_backend_init(void) { return false; }
+bool oled_backend_ready(void) { return false; }
+oled_canvas_t *oled_backend_u8g2(void) { return NULL; }
+void oled_backend_flush(void) { (void) 0; }
 
 #endif // ENABLE_OLED
-

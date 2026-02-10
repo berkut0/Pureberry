@@ -77,39 +77,18 @@ void ws2812_update(void);
 uint ws2812_get_num_leds(void);
 
 #ifdef ENABLE_WS2812
-// Forward declarations for Heavy types
-// Full definition is not needed here; `ws2812.c` uses HvHeavy.h C API (hv_setSendHook).
-#ifndef HeavyContextInterface_DEFINED
-typedef struct HeavyContextInterface HeavyContextInterface;
-#define HeavyContextInterface_DEFINED
-#endif
-#ifndef HvMessage_DEFINED
-typedef struct HvMessage HvMessage;
-#define HvMessage_DEFINED
-#endif
-#ifndef hv_uint32_t_DEFINED
-typedef uint32_t hv_uint32_t;
-#define hv_uint32_t_DEFINED
-#endif
-
 /**
- * Initialize WS2812 and register send hook for Pure Data control
- * 
- * This function initializes WS2812 driver and registers a send hook handler
- * that processes messages from Pure Data patches to control WS2812 LEDs.
- * 
- * On successful initialization, LED will blink once (white) to indicate ready state.
- * 
- * Supported send channels:
- * - set_led_color: Sets LED color (3 floats: R, G, B in range 0-1 or 0-255)
- * - set_led_index: Sets specific LED color (4 floats: index, R, G, B)
- * 
+ * Initialize WS2812 and blink once to indicate ready state.
+ *
+ * This is a convenience helper around ws2812_init() that blinks the LED(s)
+ * once on success. It does not register any Heavy send hook (patch_api.c owns
+ * the single hv_setSendHook() entry point).
+ *
  * @param pin GPIO pin number for WS2812 data line
  * @param num_leds Number of LEDs in the strip/chain
- * @param context Heavy context interface (must be initialized)
  * @return true if initialization successful, false otherwise
  */
-bool ws2812_init_with_hook(uint pin, uint num_leds, HeavyContextInterface *context);
+bool ws2812_init_with_status_blink(uint pin, uint num_leds);
 #endif // ENABLE_WS2812
 
 #ifdef __cplusplus

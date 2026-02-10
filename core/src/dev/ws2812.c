@@ -4,16 +4,15 @@
  * C implementation with C-compatible API.
  * Uses PIO state machine for precise timing required by WS2812 protocol.
  *
- * This driver never calls hv_setSendHook(). Patch API (patch_api.c) owns the single
- * send hook and routes set_led_color / set_led_index into led_queue; core0 drains
- * led_queue and calls ws2812_set_* from multicore_drain_led().
+ * This driver provides init, set_color, set_all, update, get_num_leds only.
+ * It does not depend on cross-core transport; application code (e.g. main.c)
+ * consumes LED commands from the bus and calls this API.
  */
 
 #ifdef ENABLE_WS2812
 
 #include "ws2812.h"
 
-#include <string.h>
 #include <stdlib.h>
 
 #include "hardware/pio.h"
@@ -21,7 +20,6 @@
 #include "pico/time.h"   // sleep_us, sleep_ms
 
 #include "ws2812.pio.h"
-#include "multicore_audio.h"
 
 // Static state
 static PIO pio_instance = WS2812_PIO_INST;
@@ -113,13 +111,11 @@ uint ws2812_get_num_leds(void) {
   return num_leds;
 }
 
-/* ws2812_init_with_hook: init only; no hv_setSendHook (patch_api_init owns the single send hook). */
-bool ws2812_init_with_hook(uint pin, uint num_leds_param, HeavyContextInterface *context) {
-  (void) context;
+bool ws2812_init_with_status_blink(uint pin, uint num_leds_param) {
   if (!ws2812_init(pin, num_leds_param)) return false;
 
-  /* Blink once (white) to indicate successful initialization */
-  ws2812_set_all(0xFF0000);
+  /* Blink once to indicate successful initialization. */
+  ws2812_set_all(0x00AAFF);
   ws2812_update();
   sleep_ms(100);
   ws2812_set_all(0x000000);
@@ -129,4 +125,3 @@ bool ws2812_init_with_hook(uint pin, uint num_leds_param, HeavyContextInterface 
 }
 
 #endif // ENABLE_WS2812
-

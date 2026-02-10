@@ -19,8 +19,9 @@ if (DEFINED ENV{PICO_EXTRAS_FETCH_FROM_GIT_PATH} AND (NOT PICO_EXTRAS_FETCH_FROM
 endif ()
 
 # First, check for local extras submodule (relative to this file's location)
+# This file lives in core/; repo root is one level up (core/..)
 get_filename_component(CMAKE_CURRENT_LIST_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-get_filename_component(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+get_filename_component(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(LOCAL_EXTRAS_PATH "${PROJECT_ROOT_DIR}/sdk/pico-extras")
 
 if (NOT PICO_EXTRAS_PATH AND EXISTS "${LOCAL_EXTRAS_PATH}/CMakeLists.txt")
