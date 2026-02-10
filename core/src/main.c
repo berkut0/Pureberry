@@ -54,6 +54,10 @@ static void service_led_from_bus(void) {
 #include "usb/usb_midi.h"
 #endif
 
+#ifdef ENABLE_USB_AUDIO
+#include "usb/usb_audio.h"
+#endif
+
 // Heavy context (will be initialized from generated code)
 static HeavyContextInterface *heavy_context = NULL;
 
@@ -71,6 +75,10 @@ static void init_usb_subsystem(void) {
     // Initialize USB CDC for printf
     usb_cdc_init();
 
+#ifdef ENABLE_USB_AUDIO
+    usb_audio_init();
+#endif
+
 }
 
 static void service_usb(void) {
@@ -78,6 +86,9 @@ static void service_usb(void) {
     usb_cdc_task();
 #ifdef ENABLE_USB_MIDI
     usb_midi_task();
+#endif
+#ifdef ENABLE_USB_AUDIO
+    usb_audio_task();
 #endif
 }
 
@@ -141,7 +152,11 @@ int main() {
     while (true) {
         service_usb();
         service_peripherals();
+#ifdef ENABLE_USB_AUDIO
+        tight_loop_contents();
+#else
         sleep_us(MAIN_LOOP_SLEEP_US);
+#endif
     }
 
     // Cleanup (unreachable in current implementation)
