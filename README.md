@@ -9,12 +9,14 @@ This project compiles Pure Data patches into firmware for the RP2350 microcontro
 ## Requirements
 
 - **Python 3.9+**
-- **Python dependencies** (`pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`)
+- **Python dependencies** — `pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`; with the project venv you do not need to install CMake or Ninja separately.
 - **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
 - **CMake 3.13+**
 - **Host C/C++ compiler** (needed for Pico SDK host tools like `pioasm`; e.g. LLVM Clang or Visual Studio Build Tools)
 - **ARM GCC toolchain** (arm-none-eabi-gcc)
 - **picotool** (optional, for manual flashing) - included as git submodule
+
+The build has been tested only on **Windows**; Linux and macOS are not guaranteed. If you build on another platform, consider reporting the result.
 
 ## Installation
 
@@ -29,6 +31,28 @@ Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+Recommended for all platforms: use a repository-local virtual environment to keep tool versions isolated and predictable (`cmake`, `ninja`, `hvcc`):
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+```bash
+python -m venv venv
+source venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+If your machine has multiple global Python/CMake/Ninja installs, prefer launching builds from the activated venv shell and keep IDE/toolchain paths explicit in workspace settings. CMake and Ninja from pip are used for the build; only ARM GCC and a host C/C++ compiler must be installed separately (see below).
+
+### Toolchains (ARM GCC and host compiler)
+
+The build needs **arm-none-eabi-gcc** and **arm-none-eabi-g++** on `PATH` or under `PICO_TOOLCHAIN_PATH` (the toolchain root; both the build script and CMake look in `PICO_TOOLCHAIN_PATH/bin`). Set `PICO_TOOLCHAIN_PATH` in the same environment where you run the build (e.g. in your terminal or in the shell that runs the script). On Windows, install the [GNU Arm Embedded Toolchain](https://developer.arm.com/downloads/-/gnu-rm), then add its `bin` directory to `PATH` or set `PICO_TOOLCHAIN_PATH` to the toolchain root. On Linux, install the `gcc-arm-none-eabi` package (Debian/Ubuntu) or unpack the official tarball and set `PATH` or `PICO_TOOLCHAIN_PATH`. On macOS, use Homebrew (`arm-none-eabi-gcc`) or the official package and put `bin` on `PATH` or set `PICO_TOOLCHAIN_PATH`.
+
+The Pico SDK builds host tools (e.g. pioasm) during configure. The script prefers `gcc`/`g++`; if missing, CMake can use `clang++` or MSVC. On Windows, install Visual Studio Build Tools with "Desktop development with C++" or full Visual Studio, and run builds from a Developer Command Prompt (or ensure `cl` is on `PATH`); or install LLVM/Clang. On Linux, install `build-essential`. On macOS, install Xcode Command Line Tools (`xcode-select --install`) or full Xcode. If either toolchain is missing, the build fails at Preflight with a clear error; fix using the steps above.
 
 ## Usage
 
@@ -180,7 +204,7 @@ For complete architecture details, strict multicore rules, failure modes, and va
 - **`scripts/`** - Build automation scripts
 - **`build/`** - Build output directory (created automatically)
 - **`sdk/`** - SDK submodules (pico-sdk, pico-extras)
-- **`third_party/`** - Third-party dependencies (heavylib, picotool)
+- **`third_party/`** - Third-party dependencies (heavylib, hvcc, u8g2, pico-mpr121, multibutton, picotool)
 
 ## License
 
