@@ -69,7 +69,7 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 
 ### Build Script Features
 
-- **Clean**: With `--clean` (default), only patch artifacts (`c/`, `firmware-build*`) inside `build/<patch>/` are removed; the directory and log file are kept to avoid file locks on Windows.
+- **Clean**: With `--clean`, only patch artifacts (`c/`, `firmware-build*`) inside `build/<patch>/` are removed; the directory and log file are kept to avoid file locks on Windows. Default behavior is no clean unless `--clean` is passed.
 - **Submodule Management**: Automatically detects and uses local SDK submodules
 - **Error Handling**: Graceful handling of locked files on Windows (retries, fallback to `firmware-build-<timestamp>` when `firmware-build` is locked)
 - **Flexible Output**: Supports custom output directories via `-o` option (default: `build/` in project root)
@@ -268,18 +268,24 @@ Multicore changes should be validated under worst-case load, not only idle condi
 - Common ground required
 
 ### Development Tools
-- **Python 3.11+** with virtual environment
-- **CMake 3.13+**
+- **Python 3.9+** with virtual environment
+- **CMake** (pinned to `3.28.3` in `requirements.txt`; if system CMake is used, minimum `3.13+`)
 - **Ninja** build system (installed via pip)
 - **ARM GCC Toolchain** (arm-none-eabi-gcc 13.2+)
 - **Host C/C++ compiler** (Clang 18+ recommended; required for Pico SDK host tools like `pioasm`)
 
+### Platform Support Tiers
+
+- **Supported**: Windows (active maintainer environment)
+- **Best effort**: Linux, macOS
+- **Untested**: other platforms/configurations
+
 ## Software Dependencies
 
 ### Python Packages
-- `hvcc>=0.15.0`: Pure Data to C/C++ compiler
-- `ninja>=1.13.0`: Build system
-- `cmake>=3.13.0`: CMake (installed via pip)
+- `hvcc==0.15.0`: Pure Data to C/C++ compiler
+- `ninja==1.13.0`: Build system
+- `cmake==3.28.3`: CMake (installed via pip)
 
 ### SDK Components
 - **pico-sdk 2.2.0+**: Core SDK for RP2350
@@ -292,7 +298,7 @@ Multicore changes should be validated under worst-case load, not only idle condi
   - Provided as git submodule in `third_party/heavylib`
   - Contains abstractions like `hv.osc~`, `hv.lfo`, `hv.filters`, etc.
   - Build script automatically configures search paths for hvcc
-  - Fallback: Uses plugdata installation path if submodule not available
+  - If submodule is unavailable, provide custom paths via `HVCC_SEARCH_PATHS`
 
 ## File Structure
 

@@ -8,7 +8,7 @@
 
 </div>
 
-# RP2350 Pure Data Build System
+# Pureberry (RP2350 Pure Data Build System)
 
 Build system for compiling Pure Data (Pd) patches into firmware for Raspberry Pi RP2350 via hvcc.
 
@@ -28,6 +28,8 @@ I test on a board that you can replicate on a breadboard:
 - **MPR121** for feeding events into the patch
 - **3.5 mm TRS jacks** for MIDI in/out (support in progress)
 
+A 240 MHz profile is available; the chip can also be overclocked to 600 MHz, which makes the whole endeavour with these parts very attractive. So far, no other overclocking profiles have been implemented or tested.
+
 ## Description
 
 This project compiles Pure Data patches into firmware for the RP2350 microcontroller, which features FPU and DSP capabilities suitable for real-time audio processing generated from Pd patches.
@@ -37,14 +39,18 @@ The firmware is highly configurable: build-time options and `config.h` / `config
 ## Requirements
 
 - **Python 3.9+**
-- **Python dependencies** — `pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`; with the project venv you do not need to install CMake or Ninja separately.
+- **Python dependencies** — `python -m pip install -r requirements.txt` installs pinned `hvcc`, `ninja`, and `cmake` versions; with the project venv you do not need to install CMake or Ninja separately.
+- **hvcc source of truth** — build script runs `hvcc` from the active environment (`PATH`, recommended from project `venv`). `third_party/hvcc` is kept as vendored source/tests reference, not as the executable used by the build script.
 - **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
-- **CMake 3.13+**
+- **CMake** (pinned to `3.28.3` in `requirements.txt`; if you use system CMake instead, minimum `3.13+`)
 - **Host C/C++ compiler** (needed for Pico SDK host tools like `pioasm`; e.g. LLVM Clang or Visual Studio Build Tools)
 - **ARM GCC toolchain** (arm-none-eabi-gcc)
 - **picotool** (optional, for manual flashing) - included as git submodule
 
-The build has been tested only on **Windows**; Linux and macOS are not guaranteed. If you build on another platform, consider reporting the result.
+Support tiers:
+- **Supported**: Windows (actively used/tested by maintainer)
+- **Best effort**: Linux, macOS (community testing welcome)
+- **Untested**: other platforms/configurations
 
 ## Installation
 
@@ -57,8 +63,12 @@ git submodule update --init --recursive
 Install Python dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+Dependency pin policy:
+- `requirements.txt` is the reproducible baseline for public builds.
+- Version bumps should be intentional and accompanied by matching README/TECH updates.
 
 Recommended for all platforms: use a repository-local virtual environment to keep tool versions isolated and predictable (`cmake`, `ninja`, `hvcc`):
 
@@ -80,7 +90,7 @@ If your machine has multiple global Python/CMake/Ninja installs, prefer launchin
 
 The build needs **arm-none-eabi-gcc** and **arm-none-eabi-g++** on `PATH` or under `PICO_TOOLCHAIN_PATH` (the toolchain root; both the build script and CMake look in `PICO_TOOLCHAIN_PATH/bin`). Set `PICO_TOOLCHAIN_PATH` in the same environment where you run the build (e.g. in your terminal or in the shell that runs the script). On Windows, install the [GNU Arm Embedded Toolchain](https://developer.arm.com/downloads/-/gnu-rm), then add its `bin` directory to `PATH` or set `PICO_TOOLCHAIN_PATH` to the toolchain root. On Linux, install the `gcc-arm-none-eabi` package (Debian/Ubuntu) or unpack the official tarball and set `PATH` or `PICO_TOOLCHAIN_PATH`. On macOS, use Homebrew (`arm-none-eabi-gcc`) or the official package and put `bin` on `PATH` or set `PICO_TOOLCHAIN_PATH`.
 
-The Pico SDK builds host tools (e.g. pioasm) during configure. The script prefers `gcc`/`g++`; if missing, CMake can use `clang++` or MSVC. On Windows, install Visual Studio Build Tools with "Desktop development with C++" or full Visual Studio, and run builds from a Developer Command Prompt (or ensure `cl` is on `PATH`); or install LLVM/Clang. On Linux, install `build-essential`. On macOS, install Xcode Command Line Tools (`xcode-select --install`) or full Xcode. If either toolchain is missing, the build fails at Preflight with a clear error; fix using the steps above.
+The Pico SDK builds host tools (e.g. pioasm) during configure. The script prefers `gcc`/`g++`; if missing, CMake can use `clang++` or MSVC. On Windows, install Visual Studio Build Tools with "Desktop development with C++" or full Visual Studio, and run builds from a Developer Command Prompt (or ensure `cl` is on `PATH`); or install LLVM/Clang. On Linux, install `build-essential`. On macOS, install Xcode Command Line Tools (`xcode-select --install`) or full Xcode. Missing ARM toolchain (`arm-none-eabi-gcc/g++`) fails Preflight. Missing host C++ compiler is reported as a warning, and CMake may still fail later if it cannot select a usable host toolchain.
 
 ## Usage
 
@@ -232,8 +242,8 @@ For complete architecture details, strict multicore rules, failure modes, and va
 - **`scripts/`** - Build automation scripts
 - **`build/`** - Build output directory (created automatically)
 - **`sdk/`** - SDK submodules (pico-sdk, pico-extras)
-- **`third_party/`** - Third-party dependencies (heavylib, hvcc, u8g2, pico-mpr121, multibutton, picotool)
+- **`third_party/`** - Third-party dependencies (heavylib, hvcc sources/tests, u8g2, pico-mpr121, multibutton, picotool)
 
 ## License
 
-[Specify license]
+This project is licensed under the MIT License. See `LICENSE`.
