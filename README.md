@@ -2,9 +2,27 @@
 
 Build system for compiling Pure Data (Pd) patches into firmware for Raspberry Pi RP2350 via hvcc.
 
+## A note from the author
+
+When I started the project in late 2023, I tried using RP2040 chips and was convinced that I was the first person to try compiling Pure Data on an ARM chip. This valuable experiment showed that the lack of a floating-point unit (FPU) practically rules out patches with more than four to six oscillators, and that it made no sense to develop the project further. I didn’t know at the time that the talented Daisy team had already spent years developing their platform — I only found out while working on the RP2040 firmware. If you don't enjoy tinkering, Daisy boards will likely suit you much better, as they offer an excellent out-of-the-box experience. However, if you enjoy getting your hands dirty with software and hardware tools, this is the place for you.
+
+Later, the RP2350 was released, and I decided to try again. Before I knew it, I was maintaining a fairly complex project for compiling Pure Data patches. Creating working firmware from Pure Data patches does require some persistence, but I decided to publish it so that anyone can give it a try. Together with a community of like-minded individuals, I believe that we can make the firmware and build process highly simple and clear. Raspberry Pi chips are widely used and there are plenty of solid boards with optional PSRAM, which is strongly recommended for certain applications. With this project, you can build your own synthesizers based on Pure Data patches using a cheap and widely available chip.
+
+I test on a board that you can replicate on a breadboard:
+
+- **RP2350-Zero** (Waveshare)
+- **PCM5102** module (I2S DAC)
+- **I2C 128×64 OLED** display
+- **Three buttons** for UI control
+- **Four potentiometers** (all ADC channels on RP2350; RP2350B has eight)
+- **MPR121** for feeding events into the patch
+- **3.5 mm TRS jacks** for MIDI in/out (support in progress)
+
 ## Description
 
 This project compiles Pure Data patches into firmware for the RP2350 microcontroller, which features FPU and DSP capabilities suitable for real-time audio processing generated from Pd patches.
+
+The firmware is highly configurable: build-time options and `config.h` / `config_local.h` let you adapt it to almost any scenario (which components you have or omit). A minimal setup is **any RP2350 board plus any I2S DAC**; the PCM510x family (e.g. PCM5102) works very well.
 
 ## Requirements
 
