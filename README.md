@@ -1,3 +1,9 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo_dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo_light.png">
+  <img src="assets/logo_light.png" alt="RP2350 Pure Data" width="320">
+</picture>
+
 # RP2350 Pure Data Build System
 
 Build system for compiling Pure Data (Pd) patches into firmware for Raspberry Pi RP2350 via hvcc.
