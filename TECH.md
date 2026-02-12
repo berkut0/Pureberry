@@ -69,11 +69,11 @@ This project provides a build system for compiling Pure Data (Pd) patches into f
 
 ### Build Script Features
 
-- **Clean**: По флагу `--clean` (по умолчанию) очищаются только артефакты патча (`c/`, `firmware-build*`) внутри `build/<patch>/`, без удаления всего каталога и лог-файла (чтобы избежать блокировок на Windows).
+- **Clean**: With `--clean` (default), only patch artifacts (`c/`, `firmware-build*`) inside `build/<patch>/` are removed; the directory and log file are kept to avoid file locks on Windows.
 - **Submodule Management**: Automatically detects and uses local SDK submodules
-- **Error Handling**: Graceful handling of locked files on Windows (retries, fallback to `firmware-build-<timestamp>` при заблокированном `firmware-build`)
+- **Error Handling**: Graceful handling of locked files on Windows (retries, fallback to `firmware-build-<timestamp>` when `firmware-build` is locked)
 - **Flexible Output**: Supports custom output directories via `-o` option (default: `build/` in project root)
-- **Logging Levels**: Configurable verbosity (quiet/normal/verbose/debug); лог-файл `build/<patch>/build_firmware.log` — полный вывод подпроцессов только в verbose/debug, в normal/quiet в файле только сообщения скрипта уровня INFO/ERROR и выше
+- **Logging Levels**: Configurable verbosity (quiet/normal/verbose/debug); log file `build/<patch>/build_firmware.log` gets full subprocess output only in verbose/debug; in normal/quiet the file contains only script messages at INFO level and above
 - **Abstraction Search Paths**: Automatically configures hvcc search paths for heavylib abstractions
 - **Context Integration**: Generates CMake manifest (`heavy_sources.cmake`) listing Heavy sources and includes it via `HEAVY_SOURCES_FILE` variable
 
@@ -133,7 +133,7 @@ The build script provides a unified logging system with multiple verbosity level
 - **verbose** (`-v`): Real-time streaming output from hvcc/cmake, shows build progress `[X/115]`
 - **debug** (`-d`): Full command details, paths, and all verbose output
 
-**Log File**: Лог пишется в `build/<patch>/build_firmware.log`. В режимах **verbose** и **debug** в файл попадает полный вывод подпроцессов (уровень файла DEBUG). В **normal** и **quiet** в файле только сообщения скрипта уровня INFO и выше (построчный вывод cmake/ninja в файл не сохраняется).
+**Log File**: The log is written to `build/<patch>/build_firmware.log`. In **verbose** and **debug** modes, the file contains the full output from subprocesses (file-level DEBUG). In **normal** and **quiet** modes, the file contains only script messages at INFO level and above (line-by-line cmake/ninja output is not saved to the file).
 
 **Usage**:
 ```bash
