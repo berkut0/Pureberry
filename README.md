@@ -36,6 +36,10 @@ This project compiles Pure Data patches into firmware for the RP2350 microcontro
 
 The firmware is highly configurable: build-time options and `config.h` / `config_local.h` let you adapt it to almost any scenario (which components you have or omit). A minimal setup is **any RP2350 board plus any I2S DAC**; the PCM510x family (e.g. PCM5102) works very well.
 
+### Writing patches for this firmware
+
+[PlugData](https://plugdata.org/) is recommended for authoring patches: it ships with **Heavy (Hv) nodes**, which are the objects supported by hvcc and used to generate the firmware DSP. Turn on **Compile Mode** in PlugData so the editor clearly marks objects that are not supported for compilation; that way you avoid building only to find unsupported nodes at compile time. The Heavy/hvcc backend has limitations and does not support every Pd object; for unsupported vanilla objects see the [hvcc documentation](https://github.com/Wasted-Audio/hvcc/blob/main/docs/10.unsupported_vanilla_objects.md).
+
 ## Requirements
 
 - **Python 3.9+**
