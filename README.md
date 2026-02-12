@@ -1,8 +1,12 @@
+<div align="center">
+
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo_dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/logo_light.png">
-  <img src="assets/logo_light.png" alt="RP2350 Pure Data" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo_light.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo_dark.png">
+  <img src="assets/logo_dark.png" alt="RP2350 Pure Data" width="480">
 </picture>
+
+</div>
 
 # RP2350 Pure Data Build System
 
