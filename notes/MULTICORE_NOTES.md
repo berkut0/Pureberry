@@ -1,92 +1,62 @@
-# Multicore Architecture Notes
+# Multicore Architecture Notes (Current)
 
-This document describes the strict multicore architecture implemented in this firmware. The design uses **Pattern B (strict ownership)**: core1 exclusively owns the Heavy context; core0 communicates via event queues.
+Last updated: 2026-02-09
 
-## Architecture Overview
+This document reflects the current implementation in `core/src`.
 
-- **Core1 (audio core)**: Runs Heavy DSP (`hv_process*()`), owns `HeavyContextInterface *`, handles audio buffer production. No blocking I/O, no USB tasks, no `printf()`.
-- **Core0 (I/O core)**: Handles initialization, USB/MIDI, peripherals (WS2812), drains control queues. Never calls Heavy APIs directly.
+## 1) Core Ownership
 
-## Communication Queues
+- Core1 (audio core): owns `HeavyContextInterface *`, runs Heavy DSP, drains control events before each audio block.
+- Core0 (I/O core): initializes system, runs USB/peripherals, applies LED state to hardware.
+- Rule: core0 never calls Heavy APIs directly after audio starts.
 
-Two queues enable inter-core communication (see `core/src/multicore_audio.h`):
+## 2) Cross-Core Transport (`crosscore_bus`)
 
-1. **ctrl_queue (core0 → core1)**: MIDI and control events
-   - core0 pushes via `ctrl_push_notein()`, `ctrl_push_ctlin()`, etc.
-   - core1 drains at start of each audio buffer via `multicore_drain_ctrl()`
-   - Overflow policy: drop newest
+Transport lives in `core/src/crosscore_bus.h` and `core/src/crosscore_bus.c`.
 
-2. **led_queue (core1 → core0)**: LED commands from Pd send hooks
-   - Send hooks on core1 parse messages and enqueue `led_cmd_t`
-   - core0 drains in main loop via `multicore_drain_led()` and calls `ws2812_set_*()`
-   - Overflow policy: drop newest
+### 2.1 Control path (core0 -> core1)
 
-## Key Design Decisions
+- Mechanism: `ctrl_queue` (FIFO queue).
+- Producer API:
+  - `crosscore_bus_ctrl_try_push_f(...)`
+  - `crosscore_bus_ctrl_try_push_ff(...)`
+  - `crosscore_bus_ctrl_try_push_fff(...)`
+- Consumer API:
+  - `crosscore_bus_ctrl_drain_to_heavy(...)`
+- Overflow policy: drop newest (`queue_try_add` returns `false`).
 
-### Why strict ownership?
+### 2.2 LED path (core1 -> core0)
 
-- Maximum isolation: no cross-core contention inside Heavy internals
-- Predictable scheduling: control events applied at deterministic points (block boundaries)
-- Clear ownership: only one core touches Heavy APIs, easier to reason about thread-safety
-- Scales well: adding more subsystems (I2C, displays) doesn't risk audio stability
+- Mechanism: latest-wins mailbox (not a queue).
+- Producer API:
+  - `crosscore_bus_led_publish_color(uint32_t rgb)`
+- Consumer API:
+  - `crosscore_bus_led_try_consume_latest(crosscore_led_update_t *out)`
+- Semantics: if many updates arrive quickly, only the newest committed color is consumed.
 
-### Why queues instead of Heavy's thread-safe APIs?
+## 3) Patch -> Firmware LED Contract
 
-While Heavy provides thread-safe `hv_sendMessageToReceiver*()` APIs, using our own queues:
-- Eliminates any cross-core locks inside Heavy
-- Gives explicit control over overflow policy and event timing
-- Makes the architecture more predictable as the system grows
+- Send hook owner: only `patch_api_init()` calls `hv_setSendHook()`.
+- Supported LED send command:
+  - `set_led_color (r g b)`
+- `set_led_index` is not supported anymore.
 
-## Implementation Details
+## 4) Firmware LED Apply Path
 
-### Heavy Context Ownership
+- Producer side (core1): `patch_api.c` parses `set_led_color` and publishes mailbox color.
+- Consumer side (core0): `main.c` (`service_led_from_bus`) consumes latest color and applies `ws2812_set_all(rgb)`.
+- Driver scope: `ws2812.c` has no dependency on cross-core transport.
 
-- Heavy context (`HeavyContextInterface *`) is created on core0 during initialization
-- Ownership transfers to core1 when `multicore_launch_core1()` is called
-- After launch, only core1 may call:
-  - `hv_processInlineInterleaved()`
-  - `hv_sendMessageToReceiver*()` (via `multicore_drain_ctrl()`)
-  - `hv_patch_free()` (on shutdown)
+## 5) Backpressure and Observability
 
-### Send Hook Pattern
+- Control path counters are tracked in `patch_api_transport_stats_t`.
+- LED path tracks mailbox publish counters (`led_mailbox_publish*`).
+- LED mailbox has no queue overflow/drop counter by design.
 
-Pd send hooks run synchronously during `hv_process*()` on core1. To keep them real-time safe:
+## 6) Validation Checklist
 
-1. Parse message and extract minimal data
-2. Enqueue command to `led_queue` (non-blocking)
-3. Return immediately
-
-Hardware side effects (LED updates, I2C, USB) are deferred to core0, which drains `led_queue` in its main loop.
-
-### Audio Buffer Management
-
-- DMA/IRQ handlers run on core0
-- Audio buffer pool uses spinlocks (designed for cross-core producer/consumer)
-- core1 produces buffers; DMA consumes them
-- Buffer pool initialized on core0 before launching core1
-
-## Queue Overflow Handling
-
-When queues are full, new events are dropped (drop newest policy). This is expected behavior:
-
-- **ctrl_queue overflow**: MIDI events may be lost during bursts. For continuous controls (CC), consider coalescing on core0 before pushing.
-- **led_queue overflow**: LED updates may be skipped. Acceptable for visual feedback; audio continues unaffected.
-
-The `ctrl_push_*` functions return `false` on overflow, allowing core0 to implement rate limiting or coalescing if needed.
-
-## Validation
-
-Multicore architecture should be validated under worst-case load:
-
-1. **Stress testing**: Run worst-case USB/MIDI traffic while audio plays; confirm no underruns
-2. **Queue backpressure**: Intentionally burst control events; verify overflow policy behaves correctly
-3. **Long-run stability**: Run for extended periods to catch race conditions or buffer starvation
-
-**Success criteria**:
-- No buffer underruns or audible glitches under stress
-- Consistent audio loop timing with safety margin (~1.33 ms at 48 kHz, 64 samples/channel)
-- Control event latency within tolerance (typically 1 audio block)
-
-## Reference
-
-For complete architectural rules, failure modes, and validation guidance, see the **Multicore** section in `TECH.md`.
+- Build: `cmake --build build/midi_synth_example/firmware-build -j 8`
+- Runtime checks:
+  - Audio remains stable under USB/MIDI load.
+  - LED follows latest patch color without backlog behavior.
+  - No transport calls from `ws2812.c`.
