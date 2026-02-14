@@ -1,110 +1,172 @@
-# VS Code / Cursor Setup (CMake + Pico SDK)
+# VS Code / Cursor Setup (CMake + Pico SDK + Heavy)
 
-This note describes a clean, repeatable setup for C code navigation and diagnostics in this repository.
-It is written for VS Code and Cursor (same extension model).
+This note describes a reproducible editor setup for this repository.
+It is intentionally generic and focuses on stable workflow, not incident history.
 
 ## Goal
 
-After setup, these features should work reliably:
+After setup, these features should work consistently:
 
 - Go to Definition (`F12` / Ctrl+Click)
-- Hover type/info
+- Hover types and symbols
 - Find references
-- Correct include and macro resolution for Pico SDK / Pico Extras
+- Correct include/macro resolution for Pico SDK, Pico Extras, and Heavy-generated headers
 
-## Recommended Language Stack
+## Tooling Model
 
-Use one language engine for C/C++:
+Use one C/C++ language engine:
 
 - `llvm-vs-code-extensions.vscode-clangd` (recommended)
-- `ms-vscode.cmake-tools` (required for CMake workflow)
+- `ms-vscode.cmake-tools` (project configure support)
 
-Avoid running two C/C++ engines at the same time (for example `clangd` + full IntelliSense from `cpptools`), because diagnostics and navigation can conflict.
+Avoid running two C/C++ language engines at the same time (`clangd` + full `cpptools` IntelliSense), because diagnostics/navigation may conflict.
 
-## Workspace Settings
+## Repository Workflow Assumptions
 
-Use `.vscode/settings.json` with explicit source/build dirs and explicit SDK paths:
+- Firmware builds are run via:
+  - `python scripts/build_firmware.py <patch.pd> [flags...]`
+- `clangd` reads:
+  - `${workspaceFolder}/build/compile_commands.json`
+- Compilation database source is patch-local:
+  - `build/<patch>/firmware-build/compile_commands.json`
+- If your branch does not auto-export compile commands to `build/`, copy it manually after each configure/build.
+- Build tools should be deterministic:
+  - prefer repo `venv` and pinned Ninja path in workspace settings
+
+## Workspace Settings (Current Project)
+
+Keep `.vscode/settings.json` aligned with repository layout:
 
 ```json
 {
   "cmake.sourceDirectory": "${workspaceFolder}/core",
   "cmake.buildDirectory": "${workspaceFolder}/build/vscode",
-  "cmake.configureOnOpen": true,
   "cmake.configureSettings": {
     "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+    "CMAKE_MAKE_PROGRAM": "${workspaceFolder}/venv/Scripts/ninja.exe",
     "PICO_SDK_PATH": "${workspaceFolder}/sdk/pico-sdk",
-    "PICO_EXTRAS_PATH": "${workspaceFolder}/sdk/pico-extras",
-    "PICO_BOARD": "waveshare_rp2350_zero"
+    "PICO_EXTRAS_PATH": "${workspaceFolder}/sdk/pico-extras"
   },
   "cmake.environment": {
     "PICO_SDK_PATH": "${workspaceFolder}/sdk/pico-sdk",
     "PICO_EXTRAS_PATH": "${workspaceFolder}/sdk/pico-extras"
   },
   "clangd.arguments": [
-    "--compile-commands-dir=${workspaceFolder}/build/vscode",
-    "--query-driver=C:/pico/sdk/gcc-arm-none-eabi/bin/arm-none-eabi-*.exe"
+    "--compile-commands-dir=${workspaceFolder}/build"
   ]
 }
 ```
 
 Notes:
 
-- `PICO_BOARD` should match your target board.
-- `--query-driver` must match your actual GCC ARM toolchain path.
-- If you do not want auto-configure on project open, set `"cmake.configureOnOpen": false`.
+- `CMAKE_MAKE_PROGRAM` pinning avoids ambiguous Ninja resolution in mixed Python/toolchain environments.
+- `--query-driver` can be added when needed (often useful on Windows ARM GCC setups). Keep machine-specific values in user-local settings when possible.
+
+## Optional: Local `.clangd` Overlay for Full Navigation
+
+If some symbols are behind feature flags and do not appear in current compile commands, add a local `.clangd` file at repo root to extend editor indexing only.
+
+Example:
+
+```yaml
+If:
+  PathMatch: ^core/src/.*\.(c|h)$
+CompileFlags:
+  Add:
+    - -DENABLE_I2C_DMA
+    - -DENABLE_OLED
+    - -DENABLE_USB_MIDI
+    - -DENABLE_MPR121
+    - -DENABLE_WS2812
+```
+
+Important:
+
+- This affects `clangd` navigation/diagnostics only.
+- It does **not** change firmware build behavior (`python scripts/build_firmware.py ...` remains the source of truth).
+- In this repository `.clangd` is ignored by Git (`.gitignore`) to keep it developer-local by default.
+- After changes, run `clangd: Restart language server`.
 
 ## Setup Procedure
 
-1. Open the repository root folder (not a single file).
-2. Install/enable `CMake Tools` and `clangd`.
-3. Run `CMake: Delete Cache and Reconfigure` once.
-4. Wait for configure to finish without errors.
-5. Confirm `build/vscode/compile_commands.json` exists.
-6. Run `clangd: Restart language server` (or reload window).
+1. Open the repository root folder (not an individual file).
+2. Ensure submodules are present:
+   - `git submodule update --init --recursive`
+3. Create/activate project venv and install Python deps:
+   - Windows PowerShell:
+     - `.\venv\Scripts\Activate.ps1`
+     - `python -m pip install -r requirements.txt`
+   - Linux/macOS:
+     - `source venv/bin/activate`
+     - `python -m pip install -r requirements.txt`
+4. Install/enable `clangd` and `CMake Tools`.
+5. Run one firmware build through project entrypoint (example):
+   - `python scripts/build_firmware.py pd-patches/hv_sine_simple_test.pd --name hv_sine_simple_test --no-clean`
+6. Ensure `build/compile_commands.json` exists and is fresh.
+   - If missing/outdated, copy from patch-local build:
+     - Windows PowerShell:
+       - `Copy-Item "build/<patch>/firmware-build/compile_commands.json" "build/compile_commands.json" -Force`
+     - Linux/macOS:
+       - `cp "build/<patch>/firmware-build/compile_commands.json" "build/compile_commands.json"`
+7. Run `clangd: Restart language server` (or reload window).
 
 ## Verification Checklist
 
-Quick checks:
+- `build/compile_commands.json` exists.
+- `build/compile_commands.json` has entries for:
+  - `core/src/main.c`
+  - `core/src/patch_api.c`
+- In `core/src/main.c`, `#include "pico/stdlib.h"` resolves.
+- In `core/src/patch_api.c`, `#include "HvHeavy.h"` resolves.
+- `F12` on Pico/Heavy symbols opens real headers.
 
-- `build/vscode/CMakeCache.txt` contains correct `PICO_SDK_PATH` and `PICO_EXTRAS_PATH`.
-- `build/vscode/compile_commands.json` contains entries for `core/src/main.c`.
-- In `core/src/main.c`, `#include "pico/stdlib.h"` resolves (no red underline).
-- `F12` on Pico symbols opens SDK headers.
+## Troubleshooting
 
-## Troubleshooting (Root-Cause Oriented)
+### Many files suddenly become red
 
-### Error: SDK version requirement fails (for example `Require at least Raspberry Pi Pico SDK version 2.0.0`)
+Typical root cause:
 
-Meaning:
+- `clangd` is using missing or stale `compile_commands.json`.
 
-- CMake is reading a different SDK than expected (often from global environment), not the repository SDK.
+Actions:
 
-Fix:
+- Re-run `build_firmware.py` for the patch you are currently working with.
+- Refresh `build/compile_commands.json` from `build/<patch>/firmware-build/compile_commands.json`.
+- Restart clangd.
 
-- Force `PICO_SDK_PATH` and `PICO_EXTRAS_PATH` in workspace settings (`cmake.configureSettings` and `cmake.environment`).
-- Delete CMake cache and reconfigure.
+### `pico/*` headers are unresolved
 
-### Error: `pico/stdlib.h` not found
+Typical root cause:
 
-Meaning:
+- wrong or missing SDK include paths in compilation database/configure environment.
 
-- Language server does not have correct compile arguments, include paths, or driver info.
+Actions:
 
-Fix:
+- Verify `PICO_SDK_PATH` and `PICO_EXTRAS_PATH` in `.vscode/settings.json`.
+- Reconfigure (`CMake: Delete Cache and Reconfigure`) and restart clangd.
 
-- Ensure `compile_commands.json` exists in `build/vscode`.
-- Ensure `clangd.arguments` includes the correct `--compile-commands-dir`.
-- Ensure `--query-driver` matches real ARM GCC path.
-- Restart clangd after configure.
+### Heavy headers (for example `HvHeavy.h`) are unresolved
 
-### Many unrelated red diagnostics at once
+Typical root cause:
 
-Meaning:
+- compile database does not include current patch-generated `build/<patch>/c` include path.
 
-- Usually one root failure early in configuration (wrong SDK path, missing compile database, wrong board/toolchain) causes cascaded editor errors.
+Actions:
 
-Fix:
+- Re-run `python scripts/build_firmware.py <patch.pd> --name <patch> --no-clean`.
+- Refresh `build/compile_commands.json` from `build/<patch>/firmware-build/compile_commands.json`.
+- Confirm fresh `compile_commands.json` and restart clangd.
 
-- Resolve the first configure error.
-- Reconfigure and restart language server.
+### Tool selection appears unstable
 
+Typical root cause:
+
+- implicit `PATH` selection picks different binaries across sessions.
+
+Actions:
+
+- Keep using repo `venv`.
+- Pin `CMAKE_MAKE_PROGRAM` to repo-local Ninja.
+- Check resolved binaries:
+  - Windows: `where cmake`, `where ninja`
+  - Linux/macOS: `which cmake`, `which ninja`
