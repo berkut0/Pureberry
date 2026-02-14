@@ -230,6 +230,14 @@
 #  endif
 #endif
 
+// When blocking I2C transactions share a bus with DMA OLED refresh,
+// waiting only I2C_BUS*_TIMEOUT_US may be too short (full-frame OLED DMA can
+// keep the bus busy for >5 ms). This timeout is used for "wait until DMA idle"
+// before a blocking transfer starts.
+#ifndef I2C_BUS_DMA_IDLE_TIMEOUT_US
+#define I2C_BUS_DMA_IDLE_TIMEOUT_US 30000
+#endif
+
 #ifndef I2C_BUS1_INSTANCE
 #define I2C_BUS1_INSTANCE I2C_BUS0_INSTANCE
 #endif

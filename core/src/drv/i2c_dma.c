@@ -41,8 +41,12 @@ static void __isr i2c_dma_irq_common(uint8_t irq_index) {
         if (!ctx) continue;
         if (ctx->dma_irq_index != irq_index) continue;
 
-        // DMA finished pushing words into the TX FIFO. Now wait for STOP.
-        ctx->state = I2C_DMA_STATE_WAIT_STOP;
+        // Ignore stale IRQs from a transaction already completed by poll fallback.
+        // Only an actively running DMA transfer may transition to WAIT_STOP.
+        if (ctx->state == I2C_DMA_STATE_DMA_ACTIVE && ctx->current.cmd_count > 0u) {
+            // DMA finished pushing words into the TX FIFO. Now wait for STOP.
+            ctx->state = I2C_DMA_STATE_WAIT_STOP;
+        }
     }
 }
 
@@ -90,6 +94,8 @@ static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
 
 static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
     if (ctx->dma_chan >= 0) {
+        // Clear any pending channel IRQ to avoid stale post-completion state flips.
+        dma_irqn_acknowledge_channel(ctx->dma_irq_index, (uint)ctx->dma_chan);
         dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
     }
     if (ctx->current.done) {
@@ -206,6 +212,12 @@ bool i2c_dma_submit(i2c_dma_t *ctx, const i2c_dma_txn_t *txn) {
 void i2c_dma_poll(i2c_dma_t *ctx) {
     if (!ctx || !ctx->i2c || !ctx->hw) return;
 
+    // Recover from any stale state left by a late IRQ after completion.
+    if (ctx->state != I2C_DMA_STATE_IDLE && ctx->current.cmd_count == 0u) {
+        ctx->state = I2C_DMA_STATE_IDLE;
+        ctx->deadline_valid = false;
+    }
+
     if (ctx->state == I2C_DMA_STATE_IDLE) {
         i2c_dma_start_next(ctx);
         return;
@@ -243,6 +255,7 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
 bool i2c_dma_busy(const i2c_dma_t *ctx) {
     if (!ctx) return false;
     if (ctx->state != I2C_DMA_STATE_IDLE) return true;
+    if (ctx->dma_chan >= 0 && dma_channel_is_busy((uint)ctx->dma_chan)) return true;
     queue_t *q = (queue_t *)&ctx->q;
     return !queue_is_empty(q);
 }

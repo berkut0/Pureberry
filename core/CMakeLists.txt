@@ -107,6 +107,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/ui/screens/ui_screen_main_menu.c
     src/ui/screens/ui_screen_waveform.c
     src/drv/i2c_bus.c
+    src/drv/i2c_reg_io.c
     src/drv/spi_bus.c
     src/dev/adc_pots.c
 )
@@ -158,18 +159,13 @@ if(ENABLE_WS2812)
     )
 endif()
 
-# Optional MPR121 capacitive touch (pico-mpr121 from third_party)
-set(PICO_MPR121_PATH "${PROJECT_ROOT}/third_party/pico-mpr121")
-if(ENABLE_MPR121 AND EXISTS "${PICO_MPR121_PATH}/lib/CMakeLists.txt")
-    add_subdirectory(${PICO_MPR121_PATH}/lib mpr121)
+# Optional MPR121 capacitive touch
+if(ENABLE_MPR121)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_MPR121)
     target_sources(${PROJECT_NAME}.elf PRIVATE
         src/dev/mpr121_touch.c
     )
-    target_link_libraries(${PROJECT_NAME}.elf PRIVATE pico-mpr121)
-    message(STATUS "MPR121 touch support enabled (pico-mpr121)")
-elseif(ENABLE_MPR121)
-    message(WARNING "ENABLE_MPR121 is ON but third_party/pico-mpr121 not found; run git submodule update --init --recursive")
+    message(STATUS "MPR121 touch support enabled")
 endif()
 
 # MultiButton input backend (third_party)

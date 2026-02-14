@@ -1,6 +1,9 @@
 /*
  * MPR121 capacitive touch driver (core0).
- * Uses pico-mpr121; pushes touch events via patch_api contract.
+ * Pushes touch events via patch_api contract.
+ *
+ * Important: all runtime I2C access goes through i2c_bus_* so OLED DMA and
+ * MPR121 do not race on the same hardware I2C peripheral.
  */
 
 #ifdef ENABLE_MPR121
@@ -8,17 +11,16 @@
 #include "dev/mpr121_touch.h"
 #include "config.h"
 #include "drv/i2c_bus.h"
+#include "drv/i2c_reg_io.h"
 #include "patch_api.h"
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
-#include "mpr121.h"
 
 #include <stdio.h>
 
-static mpr121_sensor_t g_sensor;
 static bool g_ready;
 static uint16_t g_last_touched;
 
@@ -26,6 +28,109 @@ static volatile bool g_irq_pending;
 
 /* Polling fallback when IRQ never fires (e.g. IRQ pin not connected). */
 static uint32_t g_last_poll_ms;
+
+typedef enum {
+    MPR121_TOUCH_STATUS_REG = 0x00u,
+    MPR121_ELECTRODE_FILTERED_DATA_REG = 0x04u,
+    MPR121_MAX_HALF_DELTA_RISING_REG = 0x2Bu,
+    MPR121_NOISE_HALF_DELTA_RISING_REG = 0x2Cu,
+    MPR121_NOISE_COUNT_LIMIT_RISING_REG = 0x2Du,
+    MPR121_FILTER_DELAY_COUNT_RISING_REG = 0x2Eu,
+    MPR121_MAX_HALF_DELTA_FALLING_REG = 0x2Fu,
+    MPR121_NOISE_HALF_DELTA_FALLING_REG = 0x30u,
+    MPR121_NOISE_COUNT_LIMIT_FALLING_REG = 0x31u,
+    MPR121_FILTER_DELAY_COUNT_FALLING_REG = 0x32u,
+    MPR121_NOISE_HALF_DELTA_TOUCHED_REG = 0x33u,
+    MPR121_NOISE_COUNT_LIMIT_TOUCHED_REG = 0x34u,
+    MPR121_FILTER_DELAY_COUNT_TOUCHED_REG = 0x35u,
+    MPR121_TOUCH_THRESHOLD_REG = 0x41u,
+    MPR121_RELEASE_THRESHOLD_REG = 0x42u,
+    MPR121_DEBOUNCE_REG = 0x5Bu,
+    MPR121_AFE_CONFIG_REG = 0x5Cu,
+    MPR121_FILTER_CONFIG_REG = 0x5Du,
+    MPR121_ELECTRODE_CONFIG_REG = 0x5Eu,
+    MPR121_AUTOCONFIG_CONTROL_0_REG = 0x7Bu,
+    MPR121_AUTOCONFIG_USL_REG = 0x7Du,
+    MPR121_AUTOCONFIG_LSL_REG = 0x7Eu,
+    MPR121_AUTOCONFIG_TARGET_REG = 0x7Fu,
+    MPR121_SOFT_RESET_REG = 0x80u,
+} mpr121_reg_t;
+
+typedef struct {
+    uint8_t reg;
+    uint8_t val;
+} mpr121_reg_write_t;
+
+static inline i2c_bus_id_t mpr121_bus_id(void) {
+    return (i2c_bus_id_t)MPR121_I2C_BUS_ID;
+}
+
+static inline uint8_t mpr121_addr7(void) {
+    return (uint8_t)MPR121_I2C_ADDR;
+}
+
+static bool mpr121_write_reg(uint8_t reg, uint8_t val) {
+    return i2c_reg_write_u8(mpr121_bus_id(), mpr121_addr7(), reg, val) == I2C_REG_IO_OK;
+}
+
+static bool mpr121_read_reg(uint8_t reg, uint8_t *out_val) {
+    if (!out_val) return false;
+    return i2c_reg_read_u8(mpr121_bus_id(), mpr121_addr7(), reg, out_val) == I2C_REG_IO_OK;
+}
+
+static bool mpr121_read_reg16(uint8_t reg, uint16_t *out_val) {
+    if (!out_val) return false;
+    return i2c_reg_read_u16_le(mpr121_bus_id(), mpr121_addr7(), reg, out_val) == I2C_REG_IO_OK;
+}
+
+static bool mpr121_write_thresholds(uint8_t touch, uint8_t release) {
+    for (uint8_t i = 0; i < 12u; i++) {
+        uint8_t touch_reg = (uint8_t)(MPR121_TOUCH_THRESHOLD_REG + i * 2u);
+        uint8_t release_reg = (uint8_t)(MPR121_RELEASE_THRESHOLD_REG + i * 2u);
+        if (!mpr121_write_reg(touch_reg, touch)) return false;
+        if (!mpr121_write_reg(release_reg, release)) return false;
+    }
+    return true;
+}
+
+static bool mpr121_program_defaults(void) {
+    static const mpr121_reg_write_t init_writes[] = {
+        { (uint8_t)MPR121_AFE_CONFIG_REG, 0x10u },
+        { (uint8_t)MPR121_FILTER_CONFIG_REG, 0x20u },
+        { (uint8_t)MPR121_AUTOCONFIG_USL_REG, 0xC9u },
+        { (uint8_t)MPR121_AUTOCONFIG_TARGET_REG, 0xB5u },
+        { (uint8_t)MPR121_AUTOCONFIG_LSL_REG, 0x83u },
+        { (uint8_t)MPR121_AUTOCONFIG_CONTROL_0_REG, 0x0Bu },
+        { (uint8_t)MPR121_MAX_HALF_DELTA_RISING_REG, 0x01u },
+        { (uint8_t)MPR121_MAX_HALF_DELTA_FALLING_REG, 0x01u },
+        { (uint8_t)MPR121_NOISE_HALF_DELTA_RISING_REG, 0x01u },
+        { (uint8_t)MPR121_NOISE_HALF_DELTA_FALLING_REG, 0x01u },
+        { (uint8_t)MPR121_NOISE_HALF_DELTA_TOUCHED_REG, 0x01u },
+        { (uint8_t)MPR121_NOISE_COUNT_LIMIT_RISING_REG, 0x00u },
+        { (uint8_t)MPR121_NOISE_COUNT_LIMIT_FALLING_REG, 0xFFu },
+        { (uint8_t)MPR121_NOISE_COUNT_LIMIT_TOUCHED_REG, 0x00u },
+        { (uint8_t)MPR121_FILTER_DELAY_COUNT_RISING_REG, 0x00u },
+        { (uint8_t)MPR121_FILTER_DELAY_COUNT_FALLING_REG, 0x02u },
+        { (uint8_t)MPR121_FILTER_DELAY_COUNT_TOUCHED_REG, 0x00u },
+        { (uint8_t)MPR121_DEBOUNCE_REG, 0x00u },
+    };
+
+    if (!mpr121_write_reg((uint8_t)MPR121_ELECTRODE_CONFIG_REG, 0x00u)) return false;
+    if (!mpr121_write_reg((uint8_t)MPR121_SOFT_RESET_REG, 0x63u)) return false;
+
+    for (size_t i = 0; i < sizeof(init_writes) / sizeof(init_writes[0]); i++) {
+        if (!mpr121_write_reg(init_writes[i].reg, init_writes[i].val)) {
+            return false;
+        }
+    }
+
+    if (!mpr121_write_thresholds((uint8_t)MPR121_TOUCH_THRESHOLD, (uint8_t)MPR121_RELEASE_THRESHOLD)) {
+        return false;
+    }
+
+    // Run mode: baseline tracking lock mode + all 12 electrodes enabled.
+    return mpr121_write_reg((uint8_t)MPR121_ELECTRODE_CONFIG_REG, 0x8Cu);
+}
 
 /* Raw IRQ handler: dedicated to this pin, must acknowledge. Callback API shares one handler and can be overwritten. */
 static void mpr121_raw_irq_handler(void) {
@@ -36,35 +141,29 @@ static void mpr121_raw_irq_handler(void) {
     }
 }
 
-static i2c_inst_t *mpr121_get_i2c(void) {
-    return i2c_bus_get_inst((i2c_bus_id_t)MPR121_I2C_BUS_ID);
-}
-
 /** Probe I2C: try to read one byte from MPR121. Returns true if device ACKs. */
-static bool mpr121_probe(i2c_bus_id_t bus_id, uint8_t addr) {
-    uint8_t reg = 0x00;  /* touch status register, read-only */
-    int nw = i2c_bus_write_timeout(bus_id, addr, &reg, 1, true);
-    if (nw != 1) return false;
-    uint8_t dummy;
-    int nr = i2c_bus_read_timeout(bus_id, addr, &dummy, 1);
-    return (nr == 1);
+static bool mpr121_probe(void) {
+    uint8_t dummy = 0u;
+    return mpr121_read_reg((uint8_t)MPR121_TOUCH_STATUS_REG, &dummy);
 }
 
 bool mpr121_touch_init(void) {
     if (g_ready) return true;
 
-    if (!i2c_bus_init_once((i2c_bus_id_t)MPR121_I2C_BUS_ID)) {
+    if (!i2c_bus_init_once(mpr121_bus_id())) {
         return false;
     }
 
-    i2c_inst_t *i2c = mpr121_get_i2c();
-    if (!i2c) {
-        return false;
+    uint32_t bus_baud_hz = i2c_bus_get_baud_hz(mpr121_bus_id());
+    if (bus_baud_hz > 400000u) {
+        printf(
+            "MPR121: warning - bus baud %lu Hz is above MPR121 datasheet guaranteed range (400000 Hz); may still work depending on hardware\n",
+            (unsigned long)bus_baud_hz
+        );
     }
 
-    uint8_t addr = (uint8_t) MPR121_I2C_ADDR;
-    if (!mpr121_probe((i2c_bus_id_t)MPR121_I2C_BUS_ID, addr)) {
-        printf("MPR121: no device at I2C addr 0x%02X (probe NACK)\n", (unsigned)addr);
+    if (!mpr121_probe()) {
+        printf("MPR121: no device at I2C addr 0x%02X (probe NACK)\n", (unsigned)mpr121_addr7());
         return false;
     }
 
@@ -77,23 +176,25 @@ bool mpr121_touch_init(void) {
     gpio_set_irq_enabled(MPR121_IRQ_PIN, GPIO_IRQ_EDGE_FALL, true);
     irq_set_enabled(IO_IRQ_BANK0, true);
 
-    g_sensor.i2c_port = i2c;
-    g_sensor.i2c_addr = addr;
-
-    mpr121_init(i2c, addr, &g_sensor);
-    mpr121_set_thresholds((uint8_t)MPR121_TOUCH_THRESHOLD, (uint8_t)MPR121_RELEASE_THRESHOLD, &g_sensor);
+    if (!mpr121_program_defaults()) {
+        printf("MPR121: register init failed\n");
+        return false;
+    }
 
     g_last_touched = 0;
-    g_last_poll_ms = 0;
+    g_last_poll_ms = to_ms_since_boot(get_absolute_time());
     g_ready = true;
     return true;
 }
 
 #define MPR121_FILTERED_DATA_MAX 1023.0f  /* 10-bit filtered data */
 
-static void mpr121_read_and_push(void) {
-    uint16_t touched;
-    mpr121_touched(&touched, &g_sensor);
+static bool mpr121_read_and_push(void) {
+    uint16_t touched = 0u;
+    if (!mpr121_read_reg16((uint8_t)MPR121_TOUCH_STATUS_REG, &touched)) {
+        return false;
+    }
+    touched &= 0x0fffu;
 
     for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
         uint16_t mask = (uint16_t)(1u << i);
@@ -106,12 +207,18 @@ static void mpr121_read_and_push(void) {
 
     /* Push filtered data (0..1) as touchN_level for pressure/degree of touch */
     for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
-        uint16_t raw;
-        mpr121_filtered_data((uint8_t)i, &raw, &g_sensor);
+        uint16_t raw = 0u;
+        uint8_t reg = (uint8_t)(MPR121_ELECTRODE_FILTERED_DATA_REG + ((uint8_t)i * 2u));
+        if (!mpr121_read_reg16(reg, &raw)) {
+            return false;
+        }
+        raw &= 0x03ffu;
         float level = (float)raw / MPR121_FILTERED_DATA_MAX;
         if (level > 1.0f) level = 1.0f;
         (void) patch_api_push_touch_level((uint8_t) i, level);
     }
+
+    return true;
 }
 
 void mpr121_touch_task(void) {
@@ -127,8 +234,19 @@ void mpr121_touch_task(void) {
     }
 
     if (do_read) {
+#ifdef ENABLE_I2C_DMA
+        if (i2c_bus_dma_busy(mpr121_bus_id())) {
+            return;
+        }
+#endif
+
         g_irq_pending = false;
-        mpr121_read_and_push();
+        if (!mpr121_read_and_push()) {
+            // Keep device handling simple: on read failure try a bus recover and
+            // re-apply the device register defaults.
+            (void)i2c_bus_recover(mpr121_bus_id());
+            (void)mpr121_program_defaults();
+        }
     }
 }
 
