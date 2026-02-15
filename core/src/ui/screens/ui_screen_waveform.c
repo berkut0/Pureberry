@@ -1,5 +1,7 @@
 #include "ui/screens/ui_screen_waveform.h"
 
+#include <stddef.h>
+
 #ifdef ENABLE_OLED
 
 #include <stdio.h>

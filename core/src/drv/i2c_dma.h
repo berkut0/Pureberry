@@ -1,15 +1,14 @@
 /*
- * I2C TX via DMA (general-purpose helper).
+ * I2C transport helper via DMA-fed IC_DATA_CMD stream.
  *
  * Goals:
- * - Non-blocking I2C writes (no busy-wait on STOP/TX_EMPTY).
+ * - Non-blocking I2C transactions (write/read/write_read).
  * - Reusable across multiple I2C peripherals on the same bus.
  * - Safe-by-default: serialized per i2c_inst_t, timeout-protected, error-reported.
  *
  * Notes:
- * - This module currently supports TX (write) transactions only.
- * - Callers provide a DATA_CMD command stream (one entry per byte) so STOP/RESTART can be
- *   expressed without special-casing device protocols.
+ * - Callers provide a DATA_CMD command stream (one entry per bus byte operation) so
+ *   STOP/RESTART/read commands can be expressed without protocol-specific branching.
  */
 
 #ifndef I2C_DMA_H
@@ -51,6 +50,11 @@ typedef struct {
     // Optional timeout for the entire transaction (0 = no timeout).
     uint32_t timeout_us;
 
+    // Optional RX destination.
+    // Lifetime: must remain valid until completion callback is invoked.
+    uint8_t *rx;
+    size_t rx_count;
+
     // Optional completion callback (invoked from i2c_dma_poll, not from IRQ).
     i2c_dma_done_cb_t done;
     void *user;
@@ -75,6 +79,7 @@ typedef struct i2c_dma {
     absolute_time_t deadline;
 
     i2c_dma_txn_t current;
+    size_t rx_received;
 
     queue_t q;
 

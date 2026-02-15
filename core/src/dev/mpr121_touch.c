@@ -234,12 +234,6 @@ void mpr121_touch_task(void) {
     }
 
     if (do_read) {
-#ifdef ENABLE_I2C_DMA
-        if (i2c_bus_dma_busy(mpr121_bus_id())) {
-            return;
-        }
-#endif
-
         g_irq_pending = false;
         if (!mpr121_read_and_push()) {
             // Keep device handling simple: on read failure try a bus recover and

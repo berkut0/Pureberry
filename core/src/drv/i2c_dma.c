@@ -1,9 +1,9 @@
 /*
- * I2C TX via DMA (general-purpose helper).
+ * I2C transport via DMA-fed IC_DATA_CMD stream.
  *
  * This implementation drives the DW_apb_i2c controller by DMA-writing words to IC_DATA_CMD.
- * DMA completion only means "all words were written to the TX FIFO", not "STOP happened on the bus",
- * so we also wait for STOP_DET (or detect TX_ABRT) before completing a transaction.
+ * DMA completion only means "all words were written to the TX FIFO", not "STOP happened on
+ * the bus", so we also wait for STOP_DET (or detect TX_ABRT) before completing a transaction.
  */
 
 #include "drv/i2c_dma.h"
@@ -89,6 +89,7 @@ static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
+    ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
 }
 
@@ -104,6 +105,7 @@ static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
+    ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
 }
 
@@ -112,8 +114,22 @@ static bool i2c_dma_deadline_expired(i2c_dma_t *ctx) {
     return absolute_time_diff_us(get_absolute_time(), ctx->deadline) < 0;
 }
 
+static bool i2c_dma_drain_rx(i2c_dma_t *ctx) {
+    bool overflow = false;
+    while (ctx->hw->rxflr != 0u) {
+        uint32_t v = ctx->hw->data_cmd;
+        if (ctx->rx_received < ctx->current.rx_count && ctx->current.rx) {
+            ctx->current.rx[ctx->rx_received++] = (uint8_t)(v & 0xFFu);
+        } else {
+            overflow = true;
+        }
+    }
+    return !overflow;
+}
+
 static void i2c_dma_begin_txn(i2c_dma_t *ctx, i2c_dma_txn_t const *t) {
     ctx->current = *t;
+    ctx->rx_received = 0u;
     ctx->last_abort_source = 0u;
 
     if (t->timeout_us > 0u) {
@@ -203,6 +219,8 @@ bool i2c_dma_submit(i2c_dma_t *ctx, const i2c_dma_txn_t *txn) {
     if (ctx->dma_chan < 0) return false;
     if (!txn->cmds || txn->cmd_count == 0) return false;
     if (txn->addr7 >= 0x80) return false;
+    if (txn->rx_count > 0u && !txn->rx) return false;
+    if (txn->rx_count > txn->cmd_count) return false;
 
     if (!queue_try_add(&ctx->q, txn)) return false;
     i2c_dma_poll(ctx);
@@ -238,15 +256,26 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
         return;
     }
 
+    if (!i2c_dma_drain_rx(ctx)) {
+        i2c_dma_abort_active(ctx, I2C_DMA_RESULT_EABORT);
+        i2c_dma_start_next(ctx);
+        return;
+    }
+
     // If DMA IRQ is missed for any reason, fall back to polling DMA busy.
     if (ctx->state == I2C_DMA_STATE_DMA_ACTIVE && !dma_channel_is_busy((uint)ctx->dma_chan)) {
         ctx->state = I2C_DMA_STATE_WAIT_STOP;
     }
 
     if (ctx->state == I2C_DMA_STATE_WAIT_STOP) {
+        raw = ctx->hw->raw_intr_stat;
         if (raw & I2C_IC_RAW_INTR_STAT_STOP_DET_BITS) {
             (void)ctx->hw->clr_stop_det;
-            i2c_dma_complete_active(ctx, I2C_DMA_RESULT_OK);
+            if (!i2c_dma_drain_rx(ctx) || ctx->rx_received != ctx->current.rx_count) {
+                i2c_dma_abort_active(ctx, I2C_DMA_RESULT_EABORT);
+            } else {
+                i2c_dma_complete_active(ctx, I2C_DMA_RESULT_OK);
+            }
             i2c_dma_start_next(ctx);
         }
     }
