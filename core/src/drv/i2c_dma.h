@@ -21,7 +21,6 @@
 #include "hardware/i2c.h"
 #include "hardware/structs/i2c.h"
 #include "pico/time.h"
-#include "pico/util/queue.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,7 +29,6 @@ extern "C" {
 typedef enum {
     I2C_DMA_RESULT_OK = 0,
     I2C_DMA_RESULT_EINVAL,
-    I2C_DMA_RESULT_EQUEUE_FULL,
     I2C_DMA_RESULT_EABORT,
     I2C_DMA_RESULT_ETIMEOUT,
 } i2c_dma_result_t;
@@ -81,8 +79,6 @@ typedef struct i2c_dma {
     i2c_dma_txn_t current;
     size_t rx_received;
 
-    queue_t q;
-
     uint32_t last_abort_source;
 } i2c_dma_t;
 
@@ -91,13 +87,13 @@ typedef struct i2c_dma {
 // If no DMA channel is available, ctx->dma_chan remains -1 and i2c_dma_submit() will fail.
 void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq_index);
 
-// Enqueue a transaction; returns false if the queue is full or txn invalid.
+// Start a transaction if transport is idle; returns false if busy or txn invalid.
 bool i2c_dma_submit(i2c_dma_t *ctx, const i2c_dma_txn_t *txn);
 
 // Drive completion state machine and invoke callbacks. Call frequently from core0 main loop.
 void i2c_dma_poll(i2c_dma_t *ctx);
 
-// True if a transaction is active or queued.
+// True if a transaction is active.
 bool i2c_dma_busy(const i2c_dma_t *ctx);
 
 // Returns the last TX_ABRT_SOURCE value observed (0 if none).

@@ -51,6 +51,7 @@ i2c_bus_result_t i2c_bus_write_read(
 // Buffer lifetime contract:
 // - `tx` and `rx` buffers (when provided) and `user` must remain valid until callback.
 // Callback contract:
+// - `done` must not be NULL (NULL submit is rejected with EINVAL).
 // - callback is called from i2c_bus_poll() context, never from ISR.
 // - callback is called exactly once for accepted submissions.
 i2c_bus_result_t i2c_bus_write_async(

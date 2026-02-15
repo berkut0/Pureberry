@@ -10,9 +10,9 @@
 #include "pico/error.h"
 #include "pico/stdlib.h"
 
-#ifndef I2C_BUS_ASYNC_MAX_CMD_WORDS
-// Must cover at least one full SSD1306 frame burst (1025 bytes) with small headroom.
-#define I2C_BUS_ASYNC_MAX_CMD_WORDS 1152u
+#ifndef I2C_BUS_ASYNC_CMD_BUF_WORDS
+// Must cover the largest expected runtime transaction in the current firmware profile.
+#define I2C_BUS_ASYNC_CMD_BUF_WORDS 1152u
 #endif
 
 typedef struct {
@@ -23,7 +23,7 @@ typedef struct {
     i2c_dma_t dma;
     i2c_bus_done_cb_t async_done;
     void *async_user;
-    uint32_t async_cmd_buf[I2C_BUS_ASYNC_MAX_CMD_WORDS];
+    uint32_t async_cmd_buf[I2C_BUS_ASYNC_CMD_BUF_WORDS];
 } i2c_bus_state_t;
 
 typedef struct {
@@ -102,8 +102,6 @@ static i2c_bus_result_t i2c_bus_map_dma_result(i2c_dma_result_t result) {
             return I2C_BUS_RESULT_OK;
         case I2C_DMA_RESULT_EINVAL:
             return I2C_BUS_RESULT_EINVAL;
-        case I2C_DMA_RESULT_EQUEUE_FULL:
-            return I2C_BUS_RESULT_EBUSY;
         case I2C_DMA_RESULT_ETIMEOUT:
             return I2C_BUS_RESULT_ETIMEOUT;
         case I2C_DMA_RESULT_EABORT:
@@ -214,6 +212,9 @@ static i2c_bus_result_t i2c_bus_submit_async(
     void *user
 ) {
     i2c_bus_state_t *bus = &g_bus_state[id];
+    if (!done) {
+        return I2C_BUS_RESULT_EINVAL;
+    }
     if (!bus->dma_ready) {
         return I2C_BUS_RESULT_EIO;
     }
@@ -348,13 +349,13 @@ i2c_bus_result_t i2c_bus_write_async(
     if (tx_args != I2C_BUS_RESULT_OK) {
         return tx_args;
     }
-    if (tx_len > I2C_BUS_ASYNC_MAX_CMD_WORDS) {
+    if (tx_len > I2C_BUS_ASYNC_CMD_BUF_WORDS) {
         return I2C_BUS_RESULT_EINVAL;
     }
 
     size_t built = i2c_dma_build_write_cmds(
         g_bus_state[id].async_cmd_buf,
-        I2C_BUS_ASYNC_MAX_CMD_WORDS,
+        I2C_BUS_ASYNC_CMD_BUF_WORDS,
         tx,
         tx_len,
         false,
@@ -388,11 +389,11 @@ i2c_bus_result_t i2c_bus_read_async(
     if (rx_args != I2C_BUS_RESULT_OK) {
         return rx_args;
     }
-    if (rx_len > I2C_BUS_ASYNC_MAX_CMD_WORDS) {
+    if (rx_len > I2C_BUS_ASYNC_CMD_BUF_WORDS) {
         return I2C_BUS_RESULT_EINVAL;
     }
 
-    i2c_bus_result_t build = i2c_bus_build_read_cmds(g_bus_state[id].async_cmd_buf, I2C_BUS_ASYNC_MAX_CMD_WORDS, rx_len);
+    i2c_bus_result_t build = i2c_bus_build_read_cmds(g_bus_state[id].async_cmd_buf, I2C_BUS_ASYNC_CMD_BUF_WORDS, rx_len);
     if (build != I2C_BUS_RESULT_OK) {
         return build;
     }
@@ -427,13 +428,13 @@ i2c_bus_result_t i2c_bus_write_read_async(
     if (rx_args != I2C_BUS_RESULT_OK) {
         return rx_args;
     }
-    if (tx_len + rx_len > I2C_BUS_ASYNC_MAX_CMD_WORDS) {
+    if (tx_len + rx_len > I2C_BUS_ASYNC_CMD_BUF_WORDS) {
         return I2C_BUS_RESULT_EINVAL;
     }
 
     i2c_bus_result_t build = i2c_bus_build_write_read_cmds(
         g_bus_state[id].async_cmd_buf,
-        I2C_BUS_ASYNC_MAX_CMD_WORDS,
+        I2C_BUS_ASYNC_CMD_BUF_WORDS,
         tx,
         tx_len,
         rx_len
