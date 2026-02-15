@@ -1,20 +1,60 @@
-# RP2350 Pure Data Build System
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo_light.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo_dark.png">
+  <img src="assets/logo_dark.png" alt="RP2350 Pure Data" width="480">
+</picture>
+
+</div>
+
+# Pureberry (RP2350 Pure Data Build System)
 
 Build system for compiling Pure Data (Pd) patches into firmware for Raspberry Pi RP2350 via hvcc.
+
+## A note from the author
+
+When I started the project in late 2023, I tried using RP2040 chips and was convinced that I was the first person to try compiling Pure Data on an ARM chip. This valuable experiment showed that the lack of a floating-point unit (FPU) practically rules out patches with more than four to six oscillators, and that it made no sense to develop the project further. I didn’t know at the time that the talented Daisy team had already spent years developing their platform — I only found out while working on the RP2040 firmware. If you don't enjoy tinkering, Daisy boards will likely suit you much better, as they offer an excellent out-of-the-box experience. However, if you enjoy getting your hands dirty with software and hardware tools, this is the place for you.
+
+Later, the RP2350 was released, and I decided to try again. Before I knew it, I was maintaining a fairly complex project for compiling Pure Data patches. Creating working firmware from Pure Data patches does require some persistence, but I decided to publish it so that anyone can give it a try. Together with a community of like-minded individuals, I believe that we can make the firmware and build process highly simple and clear. Raspberry Pi chips are widely used and there are plenty of solid boards with optional PSRAM, which is strongly recommended for certain applications. With this project, you can build your own synthesizers based on Pure Data patches using a cheap and widely available chip.
+
+I test on a board that you can replicate on a breadboard:
+
+- **RP2350-Zero** (Waveshare)
+- **PCM5102** module (I2S DAC)
+- **I2C 128×64 OLED** display
+- **Three buttons** for UI control
+- **Four potentiometers** (all ADC channels on RP2350; RP2350B has eight)
+- **MPR121** for feeding events into the patch
+- **3.5 mm TRS jacks** for MIDI in/out (support in progress)
+
+A 240 MHz profile is available; the chip can also be overclocked to 600 MHz, which makes the whole endeavour with these parts very attractive. So far, no other overclocking profiles have been implemented or tested.
 
 ## Description
 
 This project compiles Pure Data patches into firmware for the RP2350 microcontroller, which features FPU and DSP capabilities suitable for real-time audio processing generated from Pd patches.
 
+The firmware is highly configurable: build-time options and `config.h` / `config_local.h` let you adapt it to almost any scenario (which components you have or omit). A minimal setup is **any RP2350 board plus any I2S DAC**; the PCM510x family (e.g. PCM5102) works very well.
+
+### Writing patches for this firmware
+
+[PlugData](https://plugdata.org/) is recommended for authoring patches: it ships with **Heavy (Hv) nodes**, which are the objects supported by hvcc and used to generate the firmware DSP. Turn on **Compile Mode** in PlugData so the editor clearly marks objects that are not supported for compilation; that way you avoid building only to find unsupported nodes at compile time. The Heavy/hvcc backend has limitations and does not support every Pd object; for unsupported vanilla objects see the [hvcc documentation](https://github.com/Wasted-Audio/hvcc/blob/main/docs/10.unsupported_vanilla_objects.md).
+
 ## Requirements
 
 - **Python 3.9+**
-- **Python dependencies** (`pip install -r requirements.txt` installs `hvcc`, `ninja`, and `cmake`)
+- **Python dependencies** — `python -m pip install -r requirements.txt` installs pinned `hvcc`, `ninja`, and `cmake` versions; with the project venv you do not need to install CMake or Ninja separately.
+- **hvcc source of truth** — build script runs `hvcc` from the active environment (`PATH`, recommended from project `venv`). `third_party/hvcc` is kept as vendored source/tests reference, not as the executable used by the build script.
 - **Raspberry Pi Pico SDK** (for RP2350) - included as git submodule
-- **CMake 3.13+**
+- **CMake** (pinned to `3.28.3` in `requirements.txt`; if you use system CMake instead, minimum `3.13+`)
 - **Host C/C++ compiler** (needed for Pico SDK host tools like `pioasm`; e.g. LLVM Clang or Visual Studio Build Tools)
 - **ARM GCC toolchain** (arm-none-eabi-gcc)
 - **picotool** (optional, for manual flashing) - included as git submodule
+
+Support tiers:
+- **Supported**: Windows (actively used/tested by maintainer)
+- **Best effort**: Linux, macOS (community testing welcome)
+- **Untested**: other platforms/configurations
 
 ## Installation
 
@@ -27,8 +67,34 @@ git submodule update --init --recursive
 Install Python dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+Dependency pin policy:
+- `requirements.txt` is the reproducible baseline for public builds.
+- Version bumps should be intentional and accompanied by matching README/TECH updates.
+
+Recommended for all platforms: use a repository-local virtual environment to keep tool versions isolated and predictable (`cmake`, `ninja`, `hvcc`):
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+```bash
+python -m venv venv
+source venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+If your machine has multiple global Python/CMake/Ninja installs, prefer launching builds from the activated venv shell and keep IDE/toolchain paths explicit in workspace settings. CMake and Ninja from pip are used for the build; only ARM GCC and a host C/C++ compiler must be installed separately (see below).
+
+### Toolchains (ARM GCC and host compiler)
+
+The build needs **arm-none-eabi-gcc** and **arm-none-eabi-g++** on `PATH` or under `PICO_TOOLCHAIN_PATH` (the toolchain root; both the build script and CMake look in `PICO_TOOLCHAIN_PATH/bin`). Set `PICO_TOOLCHAIN_PATH` in the same environment where you run the build (e.g. in your terminal or in the shell that runs the script). On Windows, install the [GNU Arm Embedded Toolchain](https://developer.arm.com/downloads/-/gnu-rm), then add its `bin` directory to `PATH` or set `PICO_TOOLCHAIN_PATH` to the toolchain root. On Linux, install the `gcc-arm-none-eabi` package (Debian/Ubuntu) or unpack the official tarball and set `PATH` or `PICO_TOOLCHAIN_PATH`. On macOS, use Homebrew (`arm-none-eabi-gcc`) or the official package and put `bin` on `PATH` or set `PICO_TOOLCHAIN_PATH`.
+
+The Pico SDK builds host tools (e.g. pioasm) during configure. The script prefers `gcc`/`g++`; if missing, CMake can use `clang++` or MSVC. On Windows, install Visual Studio Build Tools with "Desktop development with C++" or full Visual Studio, and run builds from a Developer Command Prompt (or ensure `cl` is on `PATH`); or install LLVM/Clang. On Linux, install `build-essential`. On macOS, install Xcode Command Line Tools (`xcode-select --install`) or full Xcode. Missing ARM toolchain (`arm-none-eabi-gcc/g++`) fails Preflight. Missing host C++ compiler is reported as a warning, and CMake may still fail later if it cannot select a usable host toolchain.
 
 ## Usage
 
@@ -180,8 +246,8 @@ For complete architecture details, strict multicore rules, failure modes, and va
 - **`scripts/`** - Build automation scripts
 - **`build/`** - Build output directory (created automatically)
 - **`sdk/`** - SDK submodules (pico-sdk, pico-extras)
-- **`third_party/`** - Third-party dependencies (heavylib, picotool)
+- **`third_party/`** - Third-party dependencies (heavylib, hvcc sources/tests, u8g2, pico-mpr121, multibutton, picotool)
 
 ## License
 
-[Specify license]
+This project is licensed under the MIT License. See `LICENSE`.

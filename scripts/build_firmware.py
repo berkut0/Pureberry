@@ -66,12 +66,6 @@ FEATURE_OPTIONS = [
         "action": "store_true",
         "help": "Enable MPR121 capacitive touch support (CMake: ENABLE_MPR121).",
     },
-    {
-        "flag": "--i2c-dma",
-        "cmake_var": "ENABLE_I2C_DMA",
-        "action": "store_true",
-        "help": "Enable non-blocking I2C TX via DMA helper (CMake: ENABLE_I2C_DMA).",
-    },
 ]
 
 # RP2350 overclock presets exposed as convenience CLI flags.

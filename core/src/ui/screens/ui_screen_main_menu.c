@@ -1,6 +1,8 @@
 #include "ui/screens/ui_screen_main_menu.h"
 #include <stddef.h>
 
+#include <stddef.h>
+
 #ifdef ENABLE_OLED
 
 #include "dev/oled.h"

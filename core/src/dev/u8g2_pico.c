@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
 #include "config.h"
 
 #if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
@@ -14,10 +13,7 @@
 #ifdef ENABLE_USB_AUDIO
 #include "usb/usb_audio.h"
 #endif
-
-static inline i2c_inst_t *get_i2c_from_u8x8(u8x8_t *u8x8) {
-    return (i2c_inst_t *) u8x8_GetUserPtr(u8x8);
-}
+#include "drv/i2c_bus.h"
 
 // u8g2's CAD layer may send bytes one-by-one. For I2C SSD1306 we must keep them
 // within a single transfer between START_TRANSFER and END_TRANSFER so that the
@@ -25,13 +21,9 @@ static inline i2c_inst_t *get_i2c_from_u8x8(u8x8_t *u8x8) {
 #define PICO_U8G2_I2C_TXBUF_SIZE 64
 static uint8_t g_txbuf[PICO_U8G2_I2C_TXBUF_SIZE];
 static uint8_t g_txlen;
-static bool g_in_transfer;
 
 static uint8_t flush_i2c(u8x8_t *u8x8, bool keep_going) {
     if (g_txlen == 0) return 1;
-
-    i2c_inst_t *i2c = get_i2c_from_u8x8(u8x8);
-    if (!i2c) return 0;
 
     uint8_t addr8 = u8x8_GetI2CAddress(u8x8);
     uint8_t addr7 = (uint8_t) (addr8 >> 1);
@@ -43,7 +35,13 @@ static uint8_t flush_i2c(u8x8_t *u8x8, bool keep_going) {
     usb_audio_task();
 #endif
 #endif
-    int written = i2c_write_timeout_us(i2c, addr7, g_txbuf, (int) g_txlen, keep_going, OLED_I2C_TIMEOUT_US);
+    i2c_bus_result_t res = i2c_bus_write(
+        (i2c_bus_id_t) OLED_I2C_BUS_ID,
+        addr7,
+        g_txbuf,
+        (size_t) g_txlen,
+        keep_going
+    );
 #if defined(ENABLE_USB_MIDI) || defined(ENABLE_USB_AUDIO)
     tud_task();
 #ifdef ENABLE_USB_AUDIO
@@ -51,19 +49,17 @@ static uint8_t flush_i2c(u8x8_t *u8x8, bool keep_going) {
 #endif
 #endif
     g_txlen = 0;
-    return (written > 0) ? 1 : 0;
+    return (res == I2C_BUS_RESULT_OK) ? 1 : 0;
 }
 
 uint8_t u8x8_byte_pico_hw_i2c(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
     switch (msg) {
         case U8X8_MSG_BYTE_INIT:
             g_txlen = 0;
-            g_in_transfer = false;
             return 1;
 
         case U8X8_MSG_BYTE_START_TRANSFER:
             g_txlen = 0;
-            g_in_transfer = true;
             return 1;
 
         case U8X8_MSG_BYTE_SEND: {
@@ -88,7 +84,6 @@ uint8_t u8x8_byte_pico_hw_i2c(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
         }
 
         case U8X8_MSG_BYTE_END_TRANSFER:
-            g_in_transfer = false;
             return flush_i2c(u8x8, false);
 
         case U8X8_MSG_BYTE_SET_DC:
@@ -128,4 +123,3 @@ uint8_t u8x8_gpio_and_delay_pico(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, voi
             return 1;
     }
 }
-
