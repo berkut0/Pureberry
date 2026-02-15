@@ -86,11 +86,6 @@ i2c_bus_result_t i2c_bus_write_read_async(
     void *user
 );
 
-// Compatibility API: raw transfer count / pico error values.
-int i2c_bus_write_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop);
-int i2c_bus_read_timeout(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len);
-int i2c_bus_write_read_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_len);
-
 bool i2c_bus_recover(i2c_bus_id_t id);
 void i2c_bus_poll(void);
 

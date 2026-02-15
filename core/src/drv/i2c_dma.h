@@ -1,5 +1,9 @@
 /*
- * I2C transport helper via DMA-fed IC_DATA_CMD stream.
+ * Internal I2C transport backend (DMA-fed IC_DATA_CMD stream).
+ *
+ * IMPORTANT LAYERING RULE:
+ * - This header is internal to the transport implementation (`drv/i2c_bus.c`).
+ * - Device modules in `dev/*` must not include or use this API directly.
  *
  * Goals:
  * - Non-blocking I2C transactions (write/read/write_read).

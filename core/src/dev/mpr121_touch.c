@@ -69,31 +69,33 @@ static inline uint8_t mpr121_addr7(void) {
     return (uint8_t)MPR121_I2C_ADDR;
 }
 
-static bool mpr121_write_reg(uint8_t reg, uint8_t val) {
-    return i2c_reg_write_u8(mpr121_bus_id(), mpr121_addr7(), reg, val) == I2C_REG_IO_OK;
+static i2c_reg_io_result_t mpr121_write_reg(uint8_t reg, uint8_t val) {
+    return i2c_reg_write_u8(mpr121_bus_id(), mpr121_addr7(), reg, val);
 }
 
-static bool mpr121_read_reg(uint8_t reg, uint8_t *out_val) {
-    if (!out_val) return false;
-    return i2c_reg_read_u8(mpr121_bus_id(), mpr121_addr7(), reg, out_val) == I2C_REG_IO_OK;
+static i2c_reg_io_result_t mpr121_read_reg(uint8_t reg, uint8_t *out_val) {
+    if (!out_val) return I2C_REG_IO_EINVAL;
+    return i2c_reg_read_u8(mpr121_bus_id(), mpr121_addr7(), reg, out_val);
 }
 
-static bool mpr121_read_reg16(uint8_t reg, uint16_t *out_val) {
-    if (!out_val) return false;
-    return i2c_reg_read_u16_le(mpr121_bus_id(), mpr121_addr7(), reg, out_val) == I2C_REG_IO_OK;
+static i2c_reg_io_result_t mpr121_read_reg16(uint8_t reg, uint16_t *out_val) {
+    if (!out_val) return I2C_REG_IO_EINVAL;
+    return i2c_reg_read_u16_le(mpr121_bus_id(), mpr121_addr7(), reg, out_val);
 }
 
-static bool mpr121_write_thresholds(uint8_t touch, uint8_t release) {
+static i2c_reg_io_result_t mpr121_write_thresholds(uint8_t touch, uint8_t release) {
     for (uint8_t i = 0; i < 12u; i++) {
         uint8_t touch_reg = (uint8_t)(MPR121_TOUCH_THRESHOLD_REG + i * 2u);
         uint8_t release_reg = (uint8_t)(MPR121_RELEASE_THRESHOLD_REG + i * 2u);
-        if (!mpr121_write_reg(touch_reg, touch)) return false;
-        if (!mpr121_write_reg(release_reg, release)) return false;
+        i2c_reg_io_result_t res = mpr121_write_reg(touch_reg, touch);
+        if (res != I2C_REG_IO_OK) return res;
+        res = mpr121_write_reg(release_reg, release);
+        if (res != I2C_REG_IO_OK) return res;
     }
-    return true;
+    return I2C_REG_IO_OK;
 }
 
-static bool mpr121_program_defaults(void) {
+static i2c_reg_io_result_t mpr121_program_defaults(void) {
     static const mpr121_reg_write_t init_writes[] = {
         { (uint8_t)MPR121_AFE_CONFIG_REG, 0x10u },
         { (uint8_t)MPR121_FILTER_CONFIG_REG, 0x20u },
@@ -115,17 +117,19 @@ static bool mpr121_program_defaults(void) {
         { (uint8_t)MPR121_DEBOUNCE_REG, 0x00u },
     };
 
-    if (!mpr121_write_reg((uint8_t)MPR121_ELECTRODE_CONFIG_REG, 0x00u)) return false;
-    if (!mpr121_write_reg((uint8_t)MPR121_SOFT_RESET_REG, 0x63u)) return false;
+    i2c_reg_io_result_t res = mpr121_write_reg((uint8_t)MPR121_ELECTRODE_CONFIG_REG, 0x00u);
+    if (res != I2C_REG_IO_OK) return res;
+    res = mpr121_write_reg((uint8_t)MPR121_SOFT_RESET_REG, 0x63u);
+    if (res != I2C_REG_IO_OK) return res;
 
     for (size_t i = 0; i < sizeof(init_writes) / sizeof(init_writes[0]); i++) {
-        if (!mpr121_write_reg(init_writes[i].reg, init_writes[i].val)) {
-            return false;
-        }
+        res = mpr121_write_reg(init_writes[i].reg, init_writes[i].val);
+        if (res != I2C_REG_IO_OK) return res;
     }
 
-    if (!mpr121_write_thresholds((uint8_t)MPR121_TOUCH_THRESHOLD, (uint8_t)MPR121_RELEASE_THRESHOLD)) {
-        return false;
+    res = mpr121_write_thresholds((uint8_t)MPR121_TOUCH_THRESHOLD, (uint8_t)MPR121_RELEASE_THRESHOLD);
+    if (res != I2C_REG_IO_OK) {
+        return res;
     }
 
     // Run mode: baseline tracking lock mode + all 12 electrodes enabled.
@@ -141,8 +145,8 @@ static void mpr121_raw_irq_handler(void) {
     }
 }
 
-/** Probe I2C: try to read one byte from MPR121. Returns true if device ACKs. */
-static bool mpr121_probe(void) {
+/** Probe I2C: try to read one byte from MPR121. */
+static i2c_reg_io_result_t mpr121_probe(void) {
     uint8_t dummy = 0u;
     return mpr121_read_reg((uint8_t)MPR121_TOUCH_STATUS_REG, &dummy);
 }
@@ -162,7 +166,8 @@ bool mpr121_touch_init(void) {
         );
     }
 
-    if (!mpr121_probe()) {
+    i2c_reg_io_result_t probe = mpr121_probe();
+    if (probe != I2C_REG_IO_OK) {
         printf("MPR121: no device at I2C addr 0x%02X (probe NACK)\n", (unsigned)mpr121_addr7());
         return false;
     }
@@ -176,7 +181,7 @@ bool mpr121_touch_init(void) {
     gpio_set_irq_enabled(MPR121_IRQ_PIN, GPIO_IRQ_EDGE_FALL, true);
     irq_set_enabled(IO_IRQ_BANK0, true);
 
-    if (!mpr121_program_defaults()) {
+    if (mpr121_program_defaults() != I2C_REG_IO_OK) {
         printf("MPR121: register init failed\n");
         return false;
     }
@@ -189,10 +194,11 @@ bool mpr121_touch_init(void) {
 
 #define MPR121_FILTERED_DATA_MAX 1023.0f  /* 10-bit filtered data */
 
-static bool mpr121_read_and_push(void) {
+static i2c_reg_io_result_t mpr121_read_and_push(void) {
     uint16_t touched = 0u;
-    if (!mpr121_read_reg16((uint8_t)MPR121_TOUCH_STATUS_REG, &touched)) {
-        return false;
+    i2c_reg_io_result_t res = mpr121_read_reg16((uint8_t)MPR121_TOUCH_STATUS_REG, &touched);
+    if (res != I2C_REG_IO_OK) {
+        return res;
     }
     touched &= 0x0fffu;
 
@@ -209,8 +215,9 @@ static bool mpr121_read_and_push(void) {
     for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
         uint16_t raw = 0u;
         uint8_t reg = (uint8_t)(MPR121_ELECTRODE_FILTERED_DATA_REG + ((uint8_t)i * 2u));
-        if (!mpr121_read_reg16(reg, &raw)) {
-            return false;
+        res = mpr121_read_reg16(reg, &raw);
+        if (res != I2C_REG_IO_OK) {
+            return res;
         }
         raw &= 0x03ffu;
         float level = (float)raw / MPR121_FILTERED_DATA_MAX;
@@ -218,7 +225,7 @@ static bool mpr121_read_and_push(void) {
         (void) patch_api_push_touch_level((uint8_t) i, level);
     }
 
-    return true;
+    return I2C_REG_IO_OK;
 }
 
 void mpr121_touch_task(void) {
@@ -235,11 +242,23 @@ void mpr121_touch_task(void) {
 
     if (do_read) {
         g_irq_pending = false;
-        if (!mpr121_read_and_push()) {
-            // Keep device handling simple: on read failure try a bus recover and
-            // re-apply the device register defaults.
+        i2c_reg_io_result_t read_res = mpr121_read_and_push();
+        if (read_res == I2C_REG_IO_OK) {
+            return;
+        }
+
+        if (read_res == I2C_REG_IO_EBUSY) {
+            // Soft contention: retry later without forcing recover path.
+            g_irq_pending = true;
+            return;
+        }
+
+        if (read_res == I2C_REG_IO_EIO || read_res == I2C_REG_IO_ETIMEOUT) {
+            // Transport failure path: recover bus then re-apply device defaults.
             (void)i2c_bus_recover(mpr121_bus_id());
-            (void)mpr121_program_defaults();
+            if (mpr121_program_defaults() == I2C_REG_IO_OK) {
+                g_last_touched = 0u;
+            }
         }
     }
 }

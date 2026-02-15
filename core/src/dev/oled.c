@@ -13,6 +13,7 @@
 static u8g2_t g_u8g2;
 static bool g_oled_ready;
 enum { OLED_FB_LEN = OLED_WIDTH * (OLED_HEIGHT / 8) };
+enum { OLED_ASYNC_RECOVER_THRESHOLD = 3u };
 static const uint8_t g_oled_window_bytes[7] = {
     0x00,                                       // control byte: command stream
     0x21, 0x00, (uint8_t)(OLED_WIDTH - 1),      // column address
@@ -20,20 +21,42 @@ static const uint8_t g_oled_window_bytes[7] = {
 };
 static uint8_t g_oled_data_bytes[1 + OLED_FB_LEN];
 static bool g_oled_async_inflight;
+static uint8_t g_oled_async_error_streak;
+
+static void oled_recover_transport(void) {
+    (void)i2c_bus_recover((i2c_bus_id_t)OLED_I2C_BUS_ID);
+}
+
+static void oled_note_async_result(i2c_bus_result_t result) {
+    if (result == I2C_BUS_RESULT_OK) {
+        g_oled_async_error_streak = 0u;
+        return;
+    }
+    if (result == I2C_BUS_RESULT_EBUSY) {
+        return;
+    }
+    if (g_oled_async_error_streak < 0xFFu) {
+        g_oled_async_error_streak++;
+    }
+    if (g_oled_async_error_streak >= (uint8_t)OLED_ASYNC_RECOVER_THRESHOLD) {
+        g_oled_async_error_streak = 0u;
+        oled_recover_transport();
+    }
+}
 
 static void oled_async_data_done(void *user, i2c_bus_result_t result) {
     (void)user;
-    (void)result;
     g_oled_async_inflight = false;
+    oled_note_async_result(result);
 }
 
 static void oled_async_window_done(void *user, i2c_bus_result_t result) {
     (void)user;
     if (result != I2C_BUS_RESULT_OK) {
         g_oled_async_inflight = false;
+        oled_note_async_result(result);
         return;
     }
-
     i2c_bus_result_t r = i2c_bus_write_async(
         OLED_I2C_BUS_ID,
         (uint8_t)OLED_I2C_ADDR,
@@ -45,15 +68,16 @@ static void oled_async_window_done(void *user, i2c_bus_result_t result) {
     );
     if (r != I2C_BUS_RESULT_OK) {
         g_oled_async_inflight = false;
+        oled_note_async_result(r);
     }
 }
 
-static bool oled_queue_full_frame_async(void) {
-    if (g_oled_async_inflight) return false;
+static i2c_bus_result_t oled_queue_full_frame_async(void) {
+    if (g_oled_async_inflight) return I2C_BUS_RESULT_EBUSY;
 
     // Build data transaction: control byte 0x40 + framebuffer bytes.
     uint8_t const *fb = u8g2_GetBufferPtr(&g_u8g2);
-    if (!fb) return false;
+    if (!fb) return I2C_BUS_RESULT_EIO;
     g_oled_data_bytes[0] = 0x40u; // control byte: data stream
     memcpy(&g_oled_data_bytes[1], fb, OLED_FB_LEN);
 
@@ -69,9 +93,10 @@ static bool oled_queue_full_frame_async(void) {
     );
     if (r != I2C_BUS_RESULT_OK) {
         g_oled_async_inflight = false;
-        return false;
+        oled_note_async_result(r);
+        return r;
     }
-    return true;
+    return I2C_BUS_RESULT_OK;
 }
 
 void oled_backend_flush(void) {
@@ -108,6 +133,7 @@ bool oled_backend_init(void) {
     oled_draw_boot();
 
     g_oled_async_inflight = false;
+    g_oled_async_error_streak = 0u;
     g_oled_ready = true;
     return true;
 }

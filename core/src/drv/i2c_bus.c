@@ -11,9 +11,16 @@
 #include "pico/stdlib.h"
 
 #ifndef I2C_BUS_ASYNC_CMD_BUF_WORDS
-// Must cover the largest expected runtime transaction in the current firmware profile.
+// Transport command buffer size per bus (in IC_DATA_CMD words).
+// Current sizing target: one full OLED frame transfer in a single async write.
 #define I2C_BUS_ASYNC_CMD_BUF_WORDS 1152u
 #endif
+
+enum { I2C_BUS_OLED_FRAME_TX_BYTES = 1u + (OLED_WIDTH * (OLED_HEIGHT / 8u)) };
+_Static_assert(
+    (size_t)I2C_BUS_OLED_FRAME_TX_BYTES <= (size_t)I2C_BUS_ASYNC_CMD_BUF_WORDS,
+    "I2C_BUS_ASYNC_CMD_BUF_WORDS must fit one OLED full-frame async write"
+);
 
 typedef struct {
     bool initialized;
@@ -52,6 +59,17 @@ static const i2c_bus_config_t g_bus_config[I2C_BUS_ID_COUNT] = {
 };
 
 static i2c_bus_state_t g_bus_state[I2C_BUS_ID_COUNT];
+
+static int i2c_bus_write_timeout_raw(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop);
+static int i2c_bus_read_timeout_raw(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len);
+static int i2c_bus_write_read_timeout_raw(
+    i2c_bus_id_t id,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len
+);
 
 static bool i2c_bus_valid_id(i2c_bus_id_t id) {
     return (id >= I2C_BUS_ID_0 && id < I2C_BUS_ID_COUNT);
@@ -279,7 +297,7 @@ i2c_bus_result_t i2c_bus_write(i2c_bus_id_t id, uint8_t addr7, const uint8_t *bu
     if (args != I2C_BUS_RESULT_OK) {
         return args;
     }
-    int written = i2c_bus_write_timeout(id, addr7, buf, len, nostop);
+    int written = i2c_bus_write_timeout_raw(id, addr7, buf, len, nostop);
     return i2c_bus_map_transfer_result(written, len);
 }
 
@@ -296,7 +314,7 @@ i2c_bus_result_t i2c_bus_read(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size
     if (args != I2C_BUS_RESULT_OK) {
         return args;
     }
-    int read = i2c_bus_read_timeout(id, addr7, buf, len);
+    int read = i2c_bus_read_timeout_raw(id, addr7, buf, len);
     return i2c_bus_map_transfer_result(read, len);
 }
 
@@ -324,7 +342,7 @@ i2c_bus_result_t i2c_bus_write_read(
     if (rx_args != I2C_BUS_RESULT_OK) {
         return rx_args;
     }
-    int transferred = i2c_bus_write_read_timeout(id, addr7, tx, tx_len, rx, rx_len);
+    int transferred = i2c_bus_write_read_timeout_raw(id, addr7, tx, tx_len, rx, rx_len);
     return i2c_bus_map_transfer_result(transferred, tx_len + rx_len);
 }
 
@@ -456,7 +474,7 @@ i2c_bus_result_t i2c_bus_write_read_async(
     );
 }
 
-int i2c_bus_write_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop) {
+static int i2c_bus_write_timeout_raw(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop) {
     if (!i2c_bus_valid_id(id)) return PICO_ERROR_GENERIC;
     const i2c_bus_config_t *cfg = &g_bus_config[id];
     i2c_bus_state_t *bus = &g_bus_state[id];
@@ -472,7 +490,7 @@ int i2c_bus_write_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, si
     return res;
 }
 
-int i2c_bus_read_timeout(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len) {
+static int i2c_bus_read_timeout_raw(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len) {
     if (!i2c_bus_valid_id(id)) return PICO_ERROR_GENERIC;
     const i2c_bus_config_t *cfg = &g_bus_config[id];
     i2c_bus_state_t *bus = &g_bus_state[id];
@@ -488,7 +506,14 @@ int i2c_bus_read_timeout(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t le
     return res;
 }
 
-int i2c_bus_write_read_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_len) {
+static int i2c_bus_write_read_timeout_raw(
+    i2c_bus_id_t id,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len
+) {
     if (!i2c_bus_valid_id(id)) return PICO_ERROR_GENERIC;
     const i2c_bus_config_t *cfg = &g_bus_config[id];
     i2c_bus_state_t *bus = &g_bus_state[id];
