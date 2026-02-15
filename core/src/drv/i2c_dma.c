@@ -83,14 +83,17 @@ static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
     ctx->hw->enable = 1;
     i2c_dma_clear_i2c_irq_latches(ctx);
 
-    if (ctx->current.done) {
-        ctx->current.done(ctx->current.user, result);
-    }
+    i2c_dma_done_cb_t done = ctx->current.done;
+    void *done_user = ctx->current.user;
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
     ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
+
+    if (done) {
+        done(done_user, result);
+    }
 }
 
 static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
@@ -99,14 +102,17 @@ static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
         dma_irqn_acknowledge_channel(ctx->dma_irq_index, (uint)ctx->dma_chan);
         dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
     }
-    if (ctx->current.done) {
-        ctx->current.done(ctx->current.user, result);
-    }
+    i2c_dma_done_cb_t done = ctx->current.done;
+    void *done_user = ctx->current.user;
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
     ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
+
+    if (done) {
+        done(done_user, result);
+    }
 }
 
 static bool i2c_dma_deadline_expired(i2c_dma_t *ctx) {
