@@ -28,6 +28,28 @@ typedef struct {
 static crosscore_led_mailbox_t g_led_mb;
 static uint32_t g_led_last_seq_consumed;
 
+static void crosscore_bus_apply_ctrl_event(HeavyContextInterface *h, const crosscore_ctrl_event_t *ev) {
+    if (!h || !ev) return;
+    switch (ev->argc) {
+        case 0:
+            (void) hv_sendMessageToReceiverV(h, (hv_uint32_t) ev->receiver_hash, 0.0, "b");
+            break;
+        case 1:
+            (void) hv_sendMessageToReceiverV(h, (hv_uint32_t) ev->receiver_hash, 0.0, "f", (double) ev->argv[0]);
+            break;
+        case 2:
+            (void) hv_sendMessageToReceiverFF(h, (hv_uint32_t) ev->receiver_hash, 0.0,
+                                             (double) ev->argv[0], (double) ev->argv[1]);
+            break;
+        case 3:
+            (void) hv_sendMessageToReceiverFFF(h, (hv_uint32_t) ev->receiver_hash, 0.0,
+                                              (double) ev->argv[0], (double) ev->argv[1], (double) ev->argv[2]);
+            break;
+        default:
+            break;
+    }
+}
+
 static void led_publish(uint32_t rgb) {
     uint32_t s = __atomic_load_n(&g_led_mb.seq, __ATOMIC_RELAXED);
     __atomic_store_n(&g_led_mb.seq, s + 1u, __ATOMIC_RELEASE); /* odd = writer active */
@@ -79,29 +101,20 @@ bool crosscore_bus_ctrl_try_push_fff(uint32_t receiver_hash, float a, float b, f
 }
 
 void crosscore_bus_ctrl_drain_to_heavy(struct HeavyContextInterface *hv) {
-    if (!hv) return;
+    (void)crosscore_bus_ctrl_drain_to_heavy_budgeted(hv, (size_t)-1);
+}
+
+size_t crosscore_bus_ctrl_drain_to_heavy_budgeted(struct HeavyContextInterface *hv, size_t max_events) {
+    if (!hv) return 0u;
+    if (max_events == 0u) return 0u;
     HeavyContextInterface *h = (HeavyContextInterface *) hv;
     crosscore_ctrl_event_t ev;
-    while (queue_try_remove(&g_ctrl_queue, &ev)) {
-        switch (ev.argc) {
-            case 0:
-                (void) hv_sendMessageToReceiverV(h, (hv_uint32_t) ev.receiver_hash, 0.0, "b");
-                break;
-            case 1:
-                (void) hv_sendMessageToReceiverV(h, (hv_uint32_t) ev.receiver_hash, 0.0, "f", (double) ev.argv[0]);
-                break;
-            case 2:
-                (void) hv_sendMessageToReceiverFF(h, (hv_uint32_t) ev.receiver_hash, 0.0,
-                                                 (double) ev.argv[0], (double) ev.argv[1]);
-                break;
-            case 3:
-                (void) hv_sendMessageToReceiverFFF(h, (hv_uint32_t) ev.receiver_hash, 0.0,
-                                                  (double) ev.argv[0], (double) ev.argv[1], (double) ev.argv[2]);
-                break;
-            default:
-                break;
-        }
+    size_t drained = 0u;
+    while (drained < max_events && queue_try_remove(&g_ctrl_queue, &ev)) {
+        crosscore_bus_apply_ctrl_event(h, &ev);
+        drained++;
     }
+    return drained;
 }
 
 void crosscore_bus_led_publish_color(uint32_t rgb) {

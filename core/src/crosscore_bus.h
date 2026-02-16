@@ -14,6 +14,7 @@
 #define CROSSCORE_BUS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,6 +40,12 @@ bool crosscore_bus_ctrl_try_push_fff(uint32_t receiver_hash, float a, float b, f
 
 /** Drain control events on core1 before each audio buffer; applies to Heavy. */
 void crosscore_bus_ctrl_drain_to_heavy(struct HeavyContextInterface *hv);
+
+/**
+ * Drain at most `max_events` control events on core1 before each audio buffer.
+ * Returns number of drained events.
+ */
+size_t crosscore_bus_ctrl_drain_to_heavy_budgeted(struct HeavyContextInterface *hv, size_t max_events);
 
 /** Publish LED color from core1 send hook. Latest-wins mailbox. */
 void crosscore_bus_led_publish_color(uint32_t rgb);

@@ -29,7 +29,7 @@ size_t usb_audio_pop_i16(int16_t *dst_interleaved_i16, size_t frames);
 /** True while the host selected a non-zero alt setting for the audio streaming interface. */
 bool usb_audio_is_streaming(void);
 
-/** Current USB audio sample rate as set by the host (e.g., 44100 or 48000). */
+/** USB audio sample rate used by this firmware (fixed to 48000 Hz). */
 uint32_t usb_audio_get_sample_rate(void);
 
 /** Approximate TinyUSB RX FIFO availability in bytes (as last observed by usb_audio_task on core0). */

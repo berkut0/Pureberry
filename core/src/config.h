@@ -86,6 +86,18 @@
 #endif
 #endif
 
+// Core1 control-event drain budget per audio block.
+// 0 means "drain all events" (unbounded time).
+#ifndef AUDIO_RUNTIME_CTRL_DRAIN_MAX_EVENTS_PER_BLOCK
+#define AUDIO_RUNTIME_CTRL_DRAIN_MAX_EVENTS_PER_BLOCK 8u
+#endif
+
+// I2S producer buffer count in USB-audio mode.
+// Higher values improve glitch tolerance at the cost of output latency.
+#ifndef AUDIO_RUNTIME_USB_PRODUCER_BUFFER_COUNT
+#define AUDIO_RUNTIME_USB_PRODUCER_BUFFER_COUNT 12u
+#endif
+
 // USB bring-up / main-loop timing
 #ifndef USB_INIT_ITERATIONS
 #define USB_INIT_ITERATIONS 100

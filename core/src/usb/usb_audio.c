@@ -81,7 +81,7 @@ static int16_t usb_audio_ring[USB_AUDIO_RING_FRAMES * 2];
 static volatile uint32_t usb_audio_wr_frames;
 static volatile uint32_t usb_audio_rd_frames;
 
-// NOTE: Only the ring indices + sample rate are accessed cross-core and need atomics.
+// NOTE: Only ring indices are accessed cross-core and need atomics.
 // Avoid C11-style atomics on sub-word types (bool/uint8/uint16) since some ARM targets
 // may implement them with word-exclusive accesses that require alignment.
 static volatile bool usb_audio_streaming;
@@ -109,11 +109,9 @@ static volatile uint8_t usb_audio_last_req_entity_id;
 static volatile uint16_t usb_audio_last_req_wLength;
 
 // Control state (UAC2)
-#define USB_AUDIO_SAMPLE_RATE_44100 44100u
-#define USB_AUDIO_SAMPLE_RATE_48000 48000u
-#define USB_AUDIO_N_SAMPLE_RATES    2u
-
-static volatile uint32_t current_sample_rate = USB_AUDIO_SAMPLE_RATE_48000;
+#define USB_AUDIO_SAMPLE_RATE_HZ 48000u
+#define USB_AUDIO_BYTES_PER_FRAME \
+    ((uint32_t)CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX * (uint32_t)CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)
 
 // AudioControl interface latency (optional control). Keep as a simple 2-byte CUR value.
 static volatile int16_t current_latency = 0;
@@ -128,7 +126,7 @@ static inline uint32_t usb_audio_nominal_feedback_q16_16(uint32_t sample_rate_hz
     // Feedback value is number of audio frames per USB frame in 16.16 format.
     // Full-speed: 1 ms frames; High-speed: 125 us microframes.
     uint32_t const frame_div = (tud_speed_get() == TUSB_SPEED_HIGH) ? 8000u : 1000u;
-    if (sample_rate_hz == 0u) sample_rate_hz = USB_AUDIO_SAMPLE_RATE_48000;
+    if (sample_rate_hz == 0u) sample_rate_hz = USB_AUDIO_SAMPLE_RATE_HZ;
     return (uint32_t)((((uint64_t)sample_rate_hz) << 16) / (uint64_t)frame_div);
 }
 
@@ -242,7 +240,7 @@ bool usb_audio_is_streaming(void) {
 }
 
 uint32_t usb_audio_get_sample_rate(void) {
-    return __atomic_load_n(&current_sample_rate, __ATOMIC_ACQUIRE);
+    return USB_AUDIO_SAMPLE_RATE_HZ;
 }
 
 uint32_t usb_audio_get_last_avail_bytes(void) {
@@ -312,7 +310,6 @@ void usb_audio_init(void) {
 
     memset(mute, 0, sizeof(mute));
     memset(volume_q8_8, 0, sizeof(volume_q8_8));
-    __atomic_store_n(&current_sample_rate, USB_AUDIO_SAMPLE_RATE_48000, __ATOMIC_RELAXED);
     usb_audio_last_avail_bytes = 0u;
     usb_audio_last_rx_bytes = 0u;
     usb_audio_overrun_frames = 0u;
@@ -328,7 +325,7 @@ void usb_audio_init(void) {
     usb_audio_last_req_wLength = 0u;
     current_latency = 0;
 
-    usb_audio_last_fb_q16_16 = usb_audio_nominal_feedback_q16_16(USB_AUDIO_SAMPLE_RATE_48000);
+    usb_audio_last_fb_q16_16 = usb_audio_nominal_feedback_q16_16(USB_AUDIO_SAMPLE_RATE_HZ);
     usb_audio_fb_update_count = 0u;
 }
 
@@ -357,9 +354,8 @@ void usb_audio_task(void) {
         return;
     }
 
-    // Only PCM S16LE stereo is supported in this firmware.
-    const uint32_t bytes_per_frame =
-        (uint32_t)CFG_TUD_AUDIO_FUNC_1_N_BYTES_PER_SAMPLE_RX * (uint32_t)CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX;
+    // Only PCM S16LE stereo at 48 kHz is supported in this firmware.
+    const uint32_t bytes_per_frame = USB_AUDIO_BYTES_PER_FRAME;
 
     uint32_t to_read_bytes = avail_bytes_now;
     uint32_t free_bytes = free_frames * bytes_per_frame;
@@ -492,14 +488,11 @@ static bool usb_audio_clock_get_request(uint8_t rhport, audio_control_request_t 
             return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &curf, sizeof(curf));
         }
         if (request->bRequest == AUDIO_CS_REQ_RANGE) {
-            audio_control_range_4_n_t(USB_AUDIO_N_SAMPLE_RATES) rangef = { 0 };
-            rangef.wNumSubRanges = tu_htole16((uint16_t)USB_AUDIO_N_SAMPLE_RATES);
-            rangef.subrange[0].bMin = (int32_t)USB_AUDIO_SAMPLE_RATE_44100;
-            rangef.subrange[0].bMax = (int32_t)USB_AUDIO_SAMPLE_RATE_44100;
+            audio_control_range_4_n_t(1) rangef = { 0 };
+            rangef.wNumSubRanges = tu_htole16(1u);
+            rangef.subrange[0].bMin = (int32_t)USB_AUDIO_SAMPLE_RATE_HZ;
+            rangef.subrange[0].bMax = (int32_t)USB_AUDIO_SAMPLE_RATE_HZ;
             rangef.subrange[0].bRes = 0;
-            rangef.subrange[1].bMin = (int32_t)USB_AUDIO_SAMPLE_RATE_48000;
-            rangef.subrange[1].bMax = (int32_t)USB_AUDIO_SAMPLE_RATE_48000;
-            rangef.subrange[1].bRes = 0;
             return tud_audio_buffer_and_schedule_control_xfer(rhport, (tusb_control_request_t const *)request, &rangef, sizeof(rangef));
         }
     }
@@ -512,17 +505,14 @@ static bool usb_audio_clock_get_request(uint8_t rhport, audio_control_request_t 
     return false;
 }
 
-// Helper: clock source set requests (accept only current_sample_rate).
+// Helper: clock source set requests (accept only 48 kHz).
 static bool usb_audio_clock_set_request(audio_control_request_t const *request, uint8_t const *buf) {
     if (request->bControlSelector != AUDIO_CS_CTRL_SAM_FREQ) return false;
     if (request->bRequest != AUDIO_CS_REQ_CUR) return false;
     if (request->wLength != sizeof(audio_control_cur_4_t)) return false;
 
     uint32_t rate = (uint32_t)((audio_control_cur_4_t const *)buf)->bCur;
-    if (rate != USB_AUDIO_SAMPLE_RATE_44100 && rate != USB_AUDIO_SAMPLE_RATE_48000) return false;
-
-    __atomic_store_n(&current_sample_rate, rate, __ATOMIC_RELEASE);
-    return true;
+    return (rate == USB_AUDIO_SAMPLE_RATE_HZ);
 }
 
 static bool usb_audio_feature_unit_get_request(uint8_t rhport, audio_control_request_t const *request) {
