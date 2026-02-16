@@ -149,7 +149,10 @@ The build script supports multiple verbosity levels:
 - `--log-level debug` or `-d` - full commands and paths
 - `--log-level quiet` or `-q` - errors only
 
-Build log is saved to `build/<patch>/build_firmware.log` (full subprocess output in verbose/debug modes; script messages only in normal/quiet).
+`--log-level` controls console verbosity only.
+Full build output is always captured to files:
+- `build/<patch>/build_firmware.log` - latest run, overwritten each build
+- `build/<patch>/logs/build_firmware_<timestamp>.log` - per-run archive
 
 ## Configuration
 

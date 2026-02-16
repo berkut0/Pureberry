@@ -13,6 +13,7 @@ This script:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import logging
 import os
 import shutil
@@ -72,7 +73,7 @@ FEATURE_OPTIONS = [
 FW_SYS_CLOCK_PROFILE_OC_240MHZ = "FW_SYS_CLOCK_PROFILE_OC_240MHZ"
 DEFAULT_OC_FLASH_SPI_CLKDIV = "4"
 
-# Console verbosity mapping. File logging follows selected log level.
+# Console verbosity mapping. File logs are always collected at DEBUG.
 LOG_LEVELS = {
     "quiet": logging.ERROR,
     "normal": logging.INFO,
@@ -80,12 +81,17 @@ LOG_LEVELS = {
     "debug": logging.DEBUG,
 }
 
-FILE_LOG_LEVELS = {
-    "quiet": logging.ERROR,
-    "normal": logging.INFO,
-    "verbose": logging.DEBUG,
-    "debug": logging.DEBUG,
-}
+FULL_FILE_LOG_LEVEL = logging.DEBUG
+CONSOLE_ONLY_RECORD_ATTR = "_console_only"
+RUN_LOG_TIMESTAMP_FMT = "%Y%m%d_%H%M%S_%f"
+RUN_LOGS_DIRNAME = "logs"
+
+
+class _ExcludeConsoleOnlyFilter(logging.Filter):
+    """Exclude console-only records from file handlers."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, CONSOLE_ONLY_RECORD_ATTR, False)
 
 
 def get_logger() -> logging.Logger:
@@ -109,13 +115,19 @@ def configure_logging(log_level: str, log_file: Optional[Path] = None) -> loggin
     logger.addHandler(console_handler)
 
     if log_file:
-        attach_file_logger(logger, log_file, log_level)
+        attach_file_logger(logger, log_file, mode="w")
 
     return logger
 
 
-def attach_file_logger(logger: logging.Logger, log_file: Path, log_level: str) -> None:
-    """Attach a file handler matching selected log level."""
+def attach_file_logger(
+    logger: logging.Logger,
+    log_file: Path,
+    *,
+    level: int = FULL_FILE_LOG_LEVEL,
+    mode: str = "a",
+) -> None:
+    """Attach a file handler used for full build logs."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
@@ -125,12 +137,27 @@ def attach_file_logger(logger: logging.Logger, log_file: Path, log_level: str) -
             except Exception:
                 continue
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(FILE_LOG_LEVELS.get(log_level, logging.INFO))
+    file_handler = logging.FileHandler(log_file, mode=mode, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.addFilter(_ExcludeConsoleOnlyFilter())
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     )
     logger.addHandler(file_handler)
+
+
+def configure_run_log_files(build_dir: Path, logger: logging.Logger) -> Tuple[Path, Path]:
+    """Attach latest and per-run full log files for one build invocation."""
+    logs_dir = build_dir / RUN_LOGS_DIRNAME
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    latest_log_file = build_dir / "build_firmware.log"
+    timestamp = datetime.now().strftime(RUN_LOG_TIMESTAMP_FMT)
+    run_log_file = logs_dir / f"build_firmware_{timestamp}.log"
+
+    attach_file_logger(logger, latest_log_file, mode="w")
+    attach_file_logger(logger, run_log_file, mode="w")
+    return latest_log_file, run_log_file
 
 
 @contextmanager
@@ -169,7 +196,8 @@ def run_cmd(
 ) -> subprocess.CompletedProcess:
     """
     Run a command and route output by log_level.
-    Full stdout/stderr logged at DEBUG. quiet/normal: captured and filtered;
+    Full stdout/stderr are always logged at DEBUG to file handlers.
+    quiet/normal: captured and filtered for console only;
     verbose/debug: streamed in real time.
     """
     if label and log_level in ("verbose", "debug"):
@@ -275,7 +303,7 @@ def _emit_filtered_output(logger: logging.Logger, lines: Iterable[str]) -> None:
         level = _classify_line(line)
         if level == "info":
             continue
-        _log_classified_line(logger, line)
+        _log_classified_line(logger, line, console_only=True)
 
 
 def _classify_line(line: str) -> str:
@@ -287,14 +315,20 @@ def _classify_line(line: str) -> str:
     return "info"
 
 
-def _log_classified_line(logger: logging.Logger, line: str) -> None:
+def _log_classified_line(
+    logger: logging.Logger,
+    line: str,
+    *,
+    console_only: bool = False,
+) -> None:
     level = _classify_line(line)
+    kwargs = {"extra": {CONSOLE_ONLY_RECORD_ATTR: True}} if console_only else {}
     if level == "error":
-        logger.error("%s", line)
+        logger.error("%s", line, **kwargs)
     elif level == "warning":
-        logger.warning("%s", line)
+        logger.warning("%s", line, **kwargs)
     else:
-        logger.info("%s", line)
+        logger.info("%s", line, **kwargs)
 
 
 def get_project_root() -> Path:
@@ -400,7 +434,7 @@ def _clean_patch_build_dir(build_dir: Path, logger: logging.Logger) -> None:
     """
     Clean only key generated artifacts for one patch build directory.
 
-    We intentionally do NOT delete the whole patch directory (or the log file),
+    We intentionally do NOT delete the whole patch directory (or log files),
     to avoid Windows file-lock issues (e.g. build_firmware.log opened in an editor).
     """
     if not build_dir.exists():
@@ -1029,16 +1063,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         output_dir=output_dir,
     )
 
-    # Clean as early as possible (before attaching file logger / running any build steps).
+    latest_log_file, run_log_file = configure_run_log_files(build_dir, logger)
+    logger.info("Build directory: %s", build_dir)
+    logger.info("Latest log file: %s", latest_log_file)
+    logger.info("Run log file: %s", run_log_file)
+
+    # Clean as early as possible (before running any build steps).
     if args.clean:
         logger.info("Cleaning patch build directory: %s", build_dir)
         _clean_patch_build_dir(build_dir, logger)
-
-    logger.info("Build directory: %s", build_dir)
-
-    log_file = build_dir / "build_firmware.log"
-    attach_file_logger(logger, log_file, log_level)
-    logger.info("Full log file: %s", log_file)
 
     with log_step(logger, f"Compile PD patch ({pd_file.name})"):
         if not compile_patch(pd_file, build_dir, patch_name, logger, log_level):
