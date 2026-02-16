@@ -28,6 +28,11 @@ static volatile bool g_irq_pending;
 
 /* Polling fallback when IRQ never fires (e.g. IRQ pin not connected). */
 static uint32_t g_last_poll_ms;
+static bool g_touch_push_enabled[MPR121_NUM_ELECTRODES];
+static bool g_touch_level_push_enabled[MPR121_NUM_ELECTRODES];
+static bool g_any_touch_push_enabled;
+static bool g_any_touch_level_push_enabled;
+static bool g_touch_routes_enabled;
 
 typedef enum {
     MPR121_TOUCH_STATUS_REG = 0x00u,
@@ -136,6 +141,32 @@ static i2c_reg_io_result_t mpr121_program_defaults(void) {
     return mpr121_write_reg((uint8_t)MPR121_ELECTRODE_CONFIG_REG, 0x8Cu);
 }
 
+static void mpr121_detect_patch_touch_routes(void) {
+    g_any_touch_push_enabled = false;
+    g_any_touch_level_push_enabled = false;
+    g_touch_routes_enabled = false;
+    for (uint8_t i = 0; i < (uint8_t)MPR121_NUM_ELECTRODES; i++) {
+        g_touch_push_enabled[i] = false;
+        g_touch_level_push_enabled[i] = false;
+
+        patch_api_in_param_t meta;
+        char name[24];
+
+        (void)snprintf(name, sizeof(name), "touch%u", (unsigned)(i + 1u));
+        if (patch_api_find_in_param(name, &meta)) {
+            g_touch_push_enabled[i] = true;
+            g_any_touch_push_enabled = true;
+        }
+
+        (void)snprintf(name, sizeof(name), "touch%u_level", (unsigned)(i + 1u));
+        if (patch_api_find_in_param(name, &meta)) {
+            g_touch_level_push_enabled[i] = true;
+            g_any_touch_level_push_enabled = true;
+        }
+    }
+    g_touch_routes_enabled = (g_any_touch_push_enabled || g_any_touch_level_push_enabled);
+}
+
 /* Raw IRQ handler: dedicated to this pin, must acknowledge. Callback API shares one handler and can be overwritten. */
 static void mpr121_raw_irq_handler(void) {
     uint32_t events = gpio_get_irq_event_mask(MPR121_IRQ_PIN);
@@ -186,6 +217,13 @@ bool mpr121_touch_init(void) {
         return false;
     }
 
+    mpr121_detect_patch_touch_routes();
+    if (!g_touch_routes_enabled) {
+        // Patch has no touch inputs: keep sensor initialized, but do not run runtime reads/IRQs.
+        gpio_set_irq_enabled(MPR121_IRQ_PIN, GPIO_IRQ_EDGE_FALL, false);
+        g_irq_pending = false;
+        printf("MPR121: no touch routes in patch; runtime reads disabled\n");
+    }
     g_last_touched = 0;
     g_last_poll_ms = to_ms_since_boot(get_absolute_time());
     g_ready = true;
@@ -202,17 +240,24 @@ static i2c_reg_io_result_t mpr121_read_and_push(void) {
     }
     touched &= 0x0fffu;
 
-    for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
+    for (unsigned i = 0; i < (unsigned)MPR121_NUM_ELECTRODES; i++) {
+        if (!g_touch_push_enabled[i]) continue;
         uint16_t mask = (uint16_t)(1u << i);
         bool now = (touched & mask) != 0;
         bool prev = (g_last_touched & mask) != 0;
-        if (now != prev)
-            (void) patch_api_push_touch((uint8_t) i, now);
+        if (now != prev) {
+            (void)patch_api_push_touch((uint8_t)i, now);
+        }
     }
     g_last_touched = touched;
 
-    /* Push filtered data (0..1) as touchN_level for pressure/degree of touch */
-    for (unsigned i = 0; i < (unsigned) MPR121_NUM_ELECTRODES; i++) {
+    if (!g_any_touch_level_push_enabled) {
+        return I2C_REG_IO_OK;
+    }
+
+    /* Push filtered data (0..1) only for mapped touchN_level inputs. */
+    for (unsigned i = 0; i < (unsigned)MPR121_NUM_ELECTRODES; i++) {
+        if (!g_touch_level_push_enabled[i]) continue;
         uint16_t raw = 0u;
         uint8_t reg = (uint8_t)(MPR121_ELECTRODE_FILTERED_DATA_REG + ((uint8_t)i * 2u));
         res = mpr121_read_reg16(reg, &raw);
@@ -222,7 +267,7 @@ static i2c_reg_io_result_t mpr121_read_and_push(void) {
         raw &= 0x03ffu;
         float level = (float)raw / MPR121_FILTERED_DATA_MAX;
         if (level > 1.0f) level = 1.0f;
-        (void) patch_api_push_touch_level((uint8_t) i, level);
+        (void)patch_api_push_touch_level((uint8_t)i, level);
     }
 
     return I2C_REG_IO_OK;
@@ -230,6 +275,7 @@ static i2c_reg_io_result_t mpr121_read_and_push(void) {
 
 void mpr121_touch_task(void) {
     if (!g_ready) return;
+    if (!g_touch_routes_enabled) return;
 
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
     bool do_read = g_irq_pending;
