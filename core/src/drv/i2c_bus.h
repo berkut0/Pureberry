@@ -36,6 +36,8 @@ uint32_t i2c_bus_get_baud_hz(i2c_bus_id_t id);
 // - Call from one main execution context (not from ISR).
 // - Async completion is advanced by i2c_bus_poll() from that same context.
 // Preferred device-layer API: status-oriented helpers.
+// Blocking helpers are "fail-fast" under async contention:
+// - if an async DMA transfer is active, they return EBUSY immediately.
 i2c_bus_result_t i2c_bus_write(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop);
 i2c_bus_result_t i2c_bus_read(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len);
 i2c_bus_result_t i2c_bus_write_read(

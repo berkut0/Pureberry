@@ -128,6 +128,13 @@ static i2c_bus_result_t i2c_bus_map_dma_result(i2c_dma_result_t result) {
     }
 }
 
+static bool i2c_bus_transport_busy(i2c_bus_state_t const *bus) {
+    if (!bus) return true;
+    if (bus->blocking_active || bus->async_inflight) return true;
+    if (bus->dma_ready && i2c_dma_busy(&bus->dma)) return true;
+    return false;
+}
+
 static uint32_t i2c_bus_effective_timeout_us(const i2c_bus_config_t *cfg, uint32_t timeout_us) {
     if (timeout_us > 0u) {
         return timeout_us;
@@ -236,7 +243,7 @@ static i2c_bus_result_t i2c_bus_submit_async(
     if (!bus->dma_ready) {
         return I2C_BUS_RESULT_EIO;
     }
-    if (bus->blocking_active || bus->async_inflight || i2c_dma_busy(&bus->dma)) {
+    if (i2c_bus_transport_busy(bus)) {
         return I2C_BUS_RESULT_EBUSY;
     }
 
@@ -297,6 +304,9 @@ i2c_bus_result_t i2c_bus_write(i2c_bus_id_t id, uint8_t addr7, const uint8_t *bu
     if (args != I2C_BUS_RESULT_OK) {
         return args;
     }
+    if (i2c_bus_transport_busy(&g_bus_state[id])) {
+        return I2C_BUS_RESULT_EBUSY;
+    }
     int written = i2c_bus_write_timeout_raw(id, addr7, buf, len, nostop);
     return i2c_bus_map_transfer_result(written, len);
 }
@@ -313,6 +323,9 @@ i2c_bus_result_t i2c_bus_read(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size
     i2c_bus_result_t args = i2c_bus_check_transfer_args(buf, len);
     if (args != I2C_BUS_RESULT_OK) {
         return args;
+    }
+    if (i2c_bus_transport_busy(&g_bus_state[id])) {
+        return I2C_BUS_RESULT_EBUSY;
     }
     int read = i2c_bus_read_timeout_raw(id, addr7, buf, len);
     return i2c_bus_map_transfer_result(read, len);
@@ -341,6 +354,9 @@ i2c_bus_result_t i2c_bus_write_read(
     i2c_bus_result_t rx_args = i2c_bus_check_transfer_args(rx, rx_len);
     if (rx_args != I2C_BUS_RESULT_OK) {
         return rx_args;
+    }
+    if (i2c_bus_transport_busy(&g_bus_state[id])) {
+        return I2C_BUS_RESULT_EBUSY;
     }
     int transferred = i2c_bus_write_read_timeout_raw(id, addr7, tx, tx_len, rx, rx_len);
     return i2c_bus_map_transfer_result(transferred, tx_len + rx_len);
