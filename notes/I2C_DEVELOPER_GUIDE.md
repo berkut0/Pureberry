@@ -2,287 +2,374 @@
 
 ## 1. Purpose and Scope
 
-This document explains how I2C works in this firmware, how it is expected to be used, and how to add new I2C devices safely.
+This document explains how I2C works in this firmware, how to use the I2C
+stack correctly, and how to add new I2C devices without breaking architecture
+boundaries.
 
-It is written for:
-- developers integrating new I2C devices,
+It is intended for:
+- developers integrating new devices,
 - maintainers reviewing I2C-related changes,
-- anyone debugging I2C bus behavior (especially OLED + other devices on the same bus).
+- anyone debugging mixed-runtime traffic on shared I2C buses (for example OLED
+  plus touch controller).
 
-This guide is implementation-specific for this repository.
-
-
-### 1.1 Operating Modes (DMA Is Optional)
-
-The firmware supports two I2C operating modes:
-
-- Blocking-only mode (`ENABLE_I2C_DMA=OFF`):
-  - all runtime traffic uses blocking `i2c_bus_write/read/write_read`,
-  - no DMA queue is used.
-- Hybrid mode (`ENABLE_I2C_DMA=ON`):
-  - blocking API is still used by register-oriented devices,
-  - stream/frame devices may use DMA submit via `i2c_bus_dma_submit_writes`,
-  - `i2c_bus_poll()` must run regularly to advance DMA completion.
-
-Important:
-- DMA is optional by design.
-- If DMA init fails (for example no DMA channel available), bus traffic can still work in blocking mode.
-
+This guide is implementation-specific for this repository and tracks current
+code behavior.
 
 ## 2. Design Goals
 
-The I2C stack is intentionally layered:
-
-- `drv/i2c_bus.*`: transport layer and bus arbitration.
-- `drv/i2c_reg_io.*`: register-oriented helpers built on `i2c_bus`.
-- `dev/*`: device-specific logic (MPR121, OLED, etc).
+The I2C stack is intentionally layered and minimal.
 
 Primary goals:
 - one transport boundary for all runtime I2C access,
-- no direct low-level I2C/DMA control from device code,
-- deterministic behavior when blocking traffic and DMA traffic share one bus,
-- clear error semantics.
+- deterministic behavior under mixed load on core0,
+- no device-layer dependency on DMA internals,
+- explicit error semantics and recovery behavior,
+- no heap allocation in the hot I2C path.
 
+Non-goals for the current iteration:
+- reentrancy redesign of the transport layer,
+- generic observability/telemetry framework,
+- compatibility with removed `ENABLE_I2C_DMA` / `--i2c-dma` workflows.
 
-## 3. Layer Responsibilities
+## 3. Architecture and Layering
 
-### 3.1 `i2c_bus` (transport + arbitration)
+### 3.1 Layer Overview
 
-Responsibilities:
-- bus init and config access,
-- blocking read/write/write+read operations with timeouts,
-- optional DMA TX path orchestration,
-- arbitration between blocking path and DMA path,
-- bus recovery,
-- periodic DMA polling entry point.
+The stack has three layers:
+- `drv/i2c_bus.*`: transport API, arbitration, sync/async transfer path.
+- `drv/i2c_reg_io.*`: register-oriented helpers built on `i2c_bus`.
+- `dev/*`: device-specific logic and scheduling policy.
 
-Non-responsibilities:
-- device register maps,
-- device business logic,
-- device-specific protocol state machines.
+### 3.2 Hard Layering Rules
 
-### 3.2 `i2c_reg_io` (register helpers)
+Mandatory rules:
+- `dev/*` must use only `i2c_bus` and `i2c_reg_io` for runtime I2C.
+- `dev/*` must not include `drv/i2c_dma.h`.
+- `dev/*` must not call Pico low-level `i2c_*_timeout_us` directly for runtime
+  traffic.
+- `dev/*` must not manipulate I2C peripheral registers.
 
-Responsibilities:
-- common register access patterns on top of `i2c_bus`:
-  - write 8-bit register,
-  - read 8/16-bit registers,
-  - write register + payload sequence,
-  - read-modify-write bits.
+### 3.3 Internal Backend (`i2c_dma`)
 
-Non-responsibilities:
-- DMA internals,
-- stream/frame protocols (like full-frame OLED DMA).
+`drv/i2c_dma.*` is an internal transport backend:
+- consumed by `drv/i2c_bus.c`,
+- not part of device-layer API contract,
+- implements DMA-fed `IC_DATA_CMD` transaction execution.
 
-### 3.3 `dev/*` (device logic)
-
-Responsibilities:
-- protocol/register programming specific to a chip/module,
-- scheduling policy for that device (polling interval, IRQ handling, etc),
-- translating data to/from app layer.
-
-Rules:
-- runtime I2C transactions must go through `i2c_bus` or `i2c_reg_io`.
-- do not access hardware I2C/DMA registers directly from device files.
-
+Internal status:
+- single-inflight execution model (no public queue API),
+- completion driven by `i2c_bus_poll()` context.
 
 ## 4. Configuration Model
 
-All key defaults are in `core/src/config.h` and can be overridden via `config_local.h` or build defines.
+Configuration defaults are in `core/src/config.h` and can be overridden via
+`config_local.h` or build defines.
 
-### 4.1 Bus selection and electrical config
+### 4.1 Bus Configuration
 
-Main macros:
-- `I2C_BUS0_INSTANCE`, `I2C_BUS0_SDA_PIN`, `I2C_BUS0_SCL_PIN`, `I2C_BUS0_BAUD`, `I2C_BUS0_TIMEOUT_US`
-- `I2C_BUS1_*` mirrors bus0 by default.
+Main bus macros:
+- `I2C_BUS0_INSTANCE`, `I2C_BUS0_SDA_PIN`, `I2C_BUS0_SCL_PIN`,
+  `I2C_BUS0_BAUD`, `I2C_BUS0_TIMEOUT_US`
+- `I2C_BUS1_*` mirrors bus0 defaults unless overridden.
 
-Default bus0 timeout:
-- `I2C_BUS0_TIMEOUT_US = 5000`
+Legacy aliases map to bus0:
+- `I2C_BUS_INSTANCE`, `I2C_BUS_SDA_PIN`, `I2C_BUS_SCL_PIN`,
+  `I2C_BUS_BAUD`, `I2C_BUS_TIMEOUT_US`
 
-### 4.2 DMA/blocking coexistence timeout
+### 4.2 DMA-Idle Wait Timeout for Blocking Path
 
-`I2C_BUS_DMA_IDLE_TIMEOUT_US` (default `30000`) is used as minimum wait when blocking path needs DMA path to become idle.
+`I2C_BUS_DMA_IDLE_TIMEOUT_US` defines minimum wait while blocking operations
+wait for async transport to become idle.
 
-Why:
-- full-frame OLED DMA can keep bus busy longer than short blocking timeout.
+Why this exists:
+- full-frame OLED runtime writes are long relative to short register transfers,
+- blocking register access must not collide with active async transport.
 
-### 4.3 Device-to-bus mapping
+### 4.3 Device Mapping Macros
 
-Key macros:
-- `OLED_I2C_BUS_ID` (default `0`)
-- `MPR121_I2C_BUS_ID` (default `0`)
-- `OLED_I2C_ADDR`, `MPR121_I2C_ADDR`
+Key device mapping macros:
+- `OLED_I2C_BUS_ID`, `OLED_I2C_ADDR`, `OLED_WIDTH`, `OLED_HEIGHT`
+- `MPR121_I2C_BUS_ID`, `MPR121_I2C_ADDR`, `MPR121_POLL_MS`
 
-This means OLED and MPR121 may share the same physical I2C bus by default.
-
+By default OLED and MPR121 can share bus 0.
 
 ## 5. Runtime Contract and Concurrency
 
-`i2c_bus` contract (from header and implementation):
-- non-reentrant,
+`i2c_bus` is non-reentrant:
 - call from one main execution context,
-- not from ISR,
-- `i2c_bus_poll()` advances DMA completion state machine and must be called regularly.
+- do not call from ISR,
+- async completion is advanced by `i2c_bus_poll()` in that same context.
 
 Implications:
-- do not call `i2c_bus_*` concurrently from multiple threads/cores without introducing external serialization.
-- ISR should set flags only; perform I2C work in task/main context.
-
+- ISR handlers should set flags only; I2C work runs in task/main code,
+- do not call `i2c_bus_*` concurrently from multiple contexts without external
+  serialization,
+- callback code must stay small and non-blocking.
 
 ## 6. Public API Overview
 
-### 6.1 `i2c_bus` status API
+### 6.1 Status Type
 
-Main status type:
+Transport result type:
 - `i2c_bus_result_t`:
-  - `OK`, `EINVAL`, `ENOT_INIT`, `EBUSY`, `ETIMEOUT`, `EIO`
+  - `I2C_BUS_RESULT_OK`
+  - `I2C_BUS_RESULT_EINVAL`
+  - `I2C_BUS_RESULT_ENOT_INIT`
+  - `I2C_BUS_RESULT_EBUSY`
+  - `I2C_BUS_RESULT_ETIMEOUT`
+  - `I2C_BUS_RESULT_EIO`
 
-Core calls:
-- `i2c_bus_init_once(id)`
-- `i2c_bus_get_baud_hz(id)`
-- `i2c_bus_write(id, addr7, buf, len, nostop)`
-- `i2c_bus_read(id, addr7, buf, len)`
-- `i2c_bus_write_read(id, addr7, tx, tx_len, rx, rx_len)`
-- `i2c_bus_recover(id)`
-- `i2c_bus_poll()`
+### 6.2 Synchronous API
 
-Compatibility calls (raw Pico-style results) are still available:
-- `i2c_bus_write_timeout`, `i2c_bus_read_timeout`, `i2c_bus_write_read_timeout`
+Public synchronous calls:
+- `i2c_bus_init_once`
+- `i2c_bus_get_baud_hz`
+- `i2c_bus_write`
+- `i2c_bus_read`
+- `i2c_bus_write_read`
+- `i2c_bus_recover`
+- `i2c_bus_poll`
 
-Use status API for new device code unless there is a strong reason not to.
+Notes:
+- sync calls are status-oriented and validate address/buffer/length,
+- sync path waits for async transport idle when required.
 
-### 6.2 DMA API through `i2c_bus` (optional)
+### 6.3 Asynchronous API
 
-Available when `ENABLE_I2C_DMA` is enabled:
-- `i2c_bus_dma_init(id, dma_chan, dma_irq_index)`
-- `i2c_bus_dma_ready(id)`
-- `i2c_bus_dma_busy(id)`
-- descriptor type `i2c_bus_dma_write_req_t`
-- `i2c_bus_dma_submit_writes(id, addr7, reqs, req_count)`
+Public asynchronous calls:
+- `i2c_bus_write_async`
+- `i2c_bus_read_async`
+- `i2c_bus_write_read_async`
 
-`i2c_bus_dma_write_req_t` fields:
-- `bytes`, `len`
-- `restart_first`
-- `timeout_us`
-- `cmd_buf`, `cmd_buf_words`
+Completion callback type:
+- `i2c_bus_done_cb_t`
 
-Important lifetime rule:
-- `cmd_buf` memory must remain valid until DMA transfer completion.
-- `bytes` are only needed during submit (they are converted to `cmd_buf` inside `i2c_bus`).
+### 6.4 Async Submit Semantics
 
-### 6.3 `i2c_reg_io` API
+Submit returns immediately:
+- `OK`: accepted for async execution.
+- `EINVAL`, `ENOT_INIT`, `EBUSY`, `EIO`: immediate reject.
 
+Rules:
+- reject path does not call callback,
+- accepted request gets exactly one callback.
+
+### 6.5 Async Completion Semantics
+
+For accepted requests:
+- callback runs from `i2c_bus_poll()` context, never from ISR,
+- callback carries final result (`OK`, `ETIMEOUT`, `EIO`, etc.),
+- callback ordering per bus follows accepted submit sequence under single-inflight
+  model.
+
+### 6.6 Lifetime Rules
+
+For async submit:
+- `tx`/`rx` buffers must remain valid until callback,
+- `user` pointer must remain valid until callback,
+- callback must not be `NULL`.
+
+### 6.7 Timeout Semantics
+
+Async `timeout_us`:
+- `timeout_us > 0`: per-request deadline,
+- `timeout_us == 0`: bus default timeout policy.
+
+## 7. `i2c_reg_io` API and Usage
+
+`i2c_reg_io` provides register operations on top of `i2c_bus`:
 - `i2c_reg_write_u8`
 - `i2c_reg_read_u8`
 - `i2c_reg_read_u16_le`
 - `i2c_reg_write_seq`
 - `i2c_reg_update_bits`
 
-Stack buffer limit in `write_seq`:
-- max payload currently bounded by `I2C_REG_IO_MAX_STACK_TX` in `i2c_reg_io.c` (default `64`, including register byte).
+Error type:
+- `i2c_reg_io_result_t` aliases `i2c_bus_result_t`.
 
-### 6.4 Addressing and Transfer Semantics
+Defined aliases include:
+- `I2C_REG_IO_OK`
+- `I2C_REG_IO_EINVAL`
+- `I2C_REG_IO_ENOT_INIT`
+- `I2C_REG_IO_EBUSY`
+- `I2C_REG_IO_ETIMEOUT`
+- `I2C_REG_IO_EIO`
 
-- `i2c_bus` APIs use 7-bit I2C address (`addr7`).
-- Some external libraries use shifted 8-bit address (`addr8 = addr7 << 1`), convert explicitly when needed.
-- `i2c_bus_write(..., nostop)` controls whether STOP is sent at the end of that blocking write.
-- `i2c_bus_dma_submit_writes` always encodes STOP on the last byte of each request.
-  - Result: each request is a separate on-wire I2C transaction.
-  - A batch is an ordered sequence of transactions, not one monolithic transaction.
+`i2c_reg_write_seq` constraint:
+- bounded by `I2C_REG_IO_MAX_STACK_TX` (stack buffer contract).
 
-### 6.5 API Edge Cases and Init Order
+## 8. Addressing and Transfer Semantics
 
-- `i2c_bus_write_read` requires valid non-empty TX and RX buffers (`tx_len > 0`, `rx_len > 0`), otherwise `EINVAL`.
-- `i2c_bus_dma_init` requires bus init first (`i2c_bus_init_once`).
-- `i2c_bus_dma_busy` returns `false` if DMA is not initialized/ready on that bus.
+Addressing:
+- public APIs use 7-bit address (`addr7`),
+- convert from 8-bit shifted addresses explicitly when integrating third-party
+  libraries.
 
+Transfer semantics:
+- sync `write/read/write_read` map to transport status and enforce argument checks,
+- async write/read/write_read build command stream and execute via internal DMA
+  backend.
 
-## 7. How Transactions Work Internally
+No hidden downgrade:
+- async path does not silently execute blocking fallback.
 
-### 7.1 Blocking path
+## 9. Internal Execution Model
 
-Before each blocking transfer, `i2c_bus`:
-1. validates bus/init/args,
-2. waits until DMA path is idle (if DMA enabled on this bus),
-3. performs Pico SDK blocking transfer with timeout.
+This section is for maintainers; it describes behavior exposed via public
+contract but does not authorize direct `i2c_dma` use from devices.
 
-This prevents blocking and DMA traffic from colliding on shared bus hardware.
+### 9.1 Blocking Path (`i2c_bus`)
 
-### 7.2 DMA path
+Before sync transfer:
+1. validate bus, init state, address, args,
+2. wait for async backend idle with timeout guard,
+3. execute blocking I2C transaction with configured timeout.
 
-DMA implementation (`i2c_dma`) writes words to `IC_DATA_CMD`.
+Purpose:
+- prevent blocking and async path collision on one hardware bus instance.
 
-Notes:
-- DMA completion means FIFO feed completed, not necessarily STOP on wire.
-- state machine waits for `STOP_DET` (or handles `TX_ABRT`).
-- timeout and abort path reset controller and clear interrupt latches.
-- stale/late IRQ handling is explicitly guarded.
+### 9.2 Async Path (`i2c_bus`)
 
-### 7.3 Batched DMA submit (`submit_writes`)
+For async request:
+1. validate bus/init/address/args/callback,
+2. build command words in per-bus static command buffer,
+3. submit single transaction to internal backend.
 
-`i2c_bus_dma_submit_writes` behavior:
-1. validates all requests,
-2. requires DMA idle before queuing sequence,
-3. builds all command buffers first,
-4. then enqueues all requests in order.
+Internal guard:
+- one inflight async request per bus.
 
-What this guarantees:
-- no enqueue starts until all requests are validated and command buffers are prepared,
-- request order is preserved in the DMA queue,
-- suitable for ordered multi-part flows (for example OLED window setup + framebuffer payload).
+### 9.3 Backend Path (`i2c_dma`)
 
-What this does not guarantee:
-- not hardware-atomic across all requests,
-- if an unexpected enqueue failure happens after at least one request was submitted, partial sequence is possible,
-- each request is still its own I2C transaction (STOP at request end).
+Internal backend uses DMA writes to `IC_DATA_CMD`.
 
+Key behavior:
+- DMA-complete means FIFO feed complete, not guaranteed STOP on wire,
+- state machine waits for STOP detection or abort,
+- timeout/abort path resets controller to known state,
+- callbacks are invoked from poll context after state cleanup.
 
-## 8. Device Integration Patterns
+## 10. Device Integration Patterns
 
-### 8.1 Register-based devices (recommended path)
+### 10.1 Register-Oriented Device Pattern
 
-Use `i2c_reg_io`.
+Recommended for devices like MPR121:
+1. `i2c_bus_init_once`
+2. optional `i2c_bus_recover` on startup if robustness required,
+3. configure chip using `i2c_reg_io`,
+4. runtime task uses register reads/writes with explicit status handling.
 
-Typical init flow:
-1. `i2c_bus_init_once(bus_id)`
-2. optional `i2c_bus_recover(bus_id)` if startup robustness is needed,
-3. program register defaults using `i2c_reg_*`,
-4. runtime reads/writes via `i2c_reg_*` only.
+### 10.2 Frame/Stream Device Pattern
 
-Example in repo:
-- `core/src/dev/mpr121_touch.c`
+Recommended for devices like OLED runtime refresh:
+1. build runtime payload in device buffer,
+2. submit async transfer via `i2c_bus_*_async`,
+3. keep device-level inflight/error/retry state machine explicit.
 
-### Why this pattern
+### 10.3 Mixed Bus Pattern (OLED + MPR121)
 
-- less boilerplate,
-- uniform error handling,
-- no transport leakage into device code.
+When two devices share one bus:
+- keep OLED runtime path async,
+- keep touch path status-driven and bounded on recover,
+- treat `EBUSY` as backpressure (defer),
+- use recover path only for transport failure classes.
 
-### 8.2 Stream/frame devices
+## 11. Error Handling Strategy
 
-Use `i2c_bus` directly.
+### 11.1 Result Mapping Strategy
 
-Cases:
-- blocking stream writes (small or infrequent),
-- DMA batched writes with descriptors for high-throughput frame updates.
+Use this meaning consistently:
+- `EINVAL`: programming/config misuse.
+- `ENOT_INIT`: bus or module init missing.
+- `EBUSY`: temporary contention/backpressure.
+- `ETIMEOUT`: transfer deadline hit.
+- `EIO`: low-level transfer/abort error.
 
-Example in repo:
-- `core/src/dev/oled.c` using `i2c_bus_dma_write_req_t[]` + `i2c_bus_dma_submit_writes`.
+### 11.2 Device Policy Guidance
 
+Recommended behavior:
+- `EBUSY`: defer/retry later, avoid aggressive recover.
+- `ETIMEOUT`/`EIO`: bounded recover/re-init path.
+- repeated failures: controlled reset of device transport state.
 
-## 9. Correct Usage Examples
+### 11.3 Recovery Guidance
 
-### 9.1 Simple register read
+`i2c_bus_recover` is acceptable in task/main context when justified.
+
+Rules:
+- do not call from ISR,
+- keep recovery bounded and explicit,
+- avoid infinite recover loops.
+
+## 12. Polling and Scheduling Requirements
+
+`i2c_bus_poll()` must run frequently from main loop to advance async transport.
+
+Scheduling advice:
+- avoid long blocking sections in same context,
+- keep callbacks short,
+- avoid heavy work inside callback; defer to task state machine.
+
+`main.c` currently calls `i2c_bus_poll()` in normal peripheral service loop.
+
+## 13. Performance and Memory Notes
+
+### 13.1 Runtime Performance
+
+General behavior:
+- async OLED updates reduce long blocking sections on core0,
+- register-device operations remain simple and predictable.
+
+### 13.2 Static Buffer Policy
+
+`I2C_BUS_ASYNC_CMD_BUF_WORDS` is static by design.
+
+Rationale:
+- deterministic memory,
+- no dynamic allocation in transport hot path,
+- known worst-case transfer fit.
+
+Current fit policy:
+- compile-time guard ensures one full OLED frame async write fits command buffer.
+
+Memory impact:
+- command buffer is per bus state (`uint32_t[I2C_BUS_ASYNC_CMD_BUF_WORDS]`),
+- with default `1152` words this is `4608` bytes per bus.
+
+### 13.3 Bus Baud Considerations
+
+High baud may work in practice but can exceed strict datasheet guarantees for
+some devices.
+
+Current example:
+- MPR121 driver warns if bus baud exceeds 400 kHz guaranteed range.
+
+## 14. Build and Feature Wiring
+
+Build through the required entrypoint:
+1. `python scripts/build_firmware.py pd-patches/mpr121_test.pd --clean --mpr121 --oled`
+2. `python scripts/build_firmware.py pd-patches/hv_sine_simple_test.pd --clean --oled`
+3. `python scripts/build_firmware.py pd-patches/hv_sine_simple_test.pd --clean`
+
+Relevant firmware feature flags:
+- `ENABLE_OLED`
+- `ENABLE_MPR121`
+
+Important:
+- no user-facing `ENABLE_I2C_DMA` or `--i2c-dma` workflow in current architecture.
+
+## 15. Correct Usage Examples
+
+### 15.1 Register Read via `i2c_reg_io`
 
 ```c
-uint8_t whoami = 0;
-i2c_reg_io_result_t r = i2c_reg_read_u8(I2C_BUS_ID_0, 0x5Au, 0x00u, &whoami);
+uint8_t value = 0u;
+i2c_reg_io_result_t r = i2c_reg_read_u8(I2C_BUS_ID_0, 0x5Au, 0x00u, &value);
 if (r != I2C_REG_IO_OK) {
-    // handle error
+    // handle transport/device error
 }
 ```
 
-### 9.2 Register update bits
+### 15.2 Register Update Bits
 
 ```c
 i2c_reg_io_result_t r = i2c_reg_update_bits(
@@ -294,155 +381,85 @@ i2c_reg_io_result_t r = i2c_reg_update_bits(
 );
 ```
 
-### 9.3 DMA sequence submit (stream/frame)
+### 15.3 Async Write Pattern
 
 ```c
-i2c_bus_dma_write_req_t reqs[] = {
-    {
-        .bytes = header_bytes,
-        .len = header_len,
-        .restart_first = false,
-        .timeout_us = 20000u,
-        .cmd_buf = header_cmd_buf,
-        .cmd_buf_words = header_cmd_buf_words,
-    },
-    {
-        .bytes = payload_bytes,
-        .len = payload_len,
-        .restart_first = false,
-        .timeout_us = 50000u,
-        .cmd_buf = payload_cmd_buf,
-        .cmd_buf_words = payload_cmd_buf_words,
-    },
-};
-i2c_bus_result_t r = i2c_bus_dma_submit_writes(I2C_BUS_ID_0, 0x3Cu, reqs, 2u);
+static bool inflight = false;
+
+static void dev_done(void *user, i2c_bus_result_t result) {
+    (void)user;
+    inflight = false;
+    // store result in device state machine
+}
+
+void dev_task(void) {
+    if (inflight) return;
+    i2c_bus_result_t r = i2c_bus_write_async(
+        I2C_BUS_ID_0,
+        0x3Cu,
+        tx_buf,
+        tx_len,
+        20000u,
+        dev_done,
+        NULL
+    );
+    if (r == I2C_BUS_RESULT_OK) {
+        inflight = true;
+    } else if (r == I2C_BUS_RESULT_EBUSY) {
+        // defer and retry later
+    } else {
+        // explicit error path
+    }
+}
 ```
 
+## 16. Anti-Patterns (Do Not Do This)
 
-## 10. Anti-Patterns (Do Not Do This)
+- Do not include `drv/i2c_dma.h` from `dev/*`.
+- Do not call `hardware/i2c.h` transfer helpers directly in device runtime code.
+- Do not call `i2c_bus_*` from ISR context.
+- Do not pass temporary async buffers that can go out of scope before callback.
+- Do not hide recover loops or retry forever without bounds.
+- Do not assume async callback can execute heavy logic safely.
 
-- Do not call `hardware/i2c.h` transfer functions directly in device modules for runtime traffic.
-- Do not include or manipulate `hardware/regs/i2c.h` in device modules.
-- Do not mix direct DMA queue manipulation with bus-level API.
-- Do not call `i2c_bus_*` from ISR.
-- Do not pass temporary/stack command buffers to DMA if they may go out of scope before completion.
-- Do not bypass `i2c_bus_poll()` when DMA is enabled.
-- Do not assume `i2c_bus_dma_submit_writes` creates one single on-wire I2C transaction.
+## 17. Checklist: Adding a New I2C Device
 
+1. Choose pattern:
+   - register-oriented: `i2c_reg_io`,
+   - frame/stream-oriented: `i2c_bus_*_async` with explicit state machine.
+2. Add config macros (address, bus ID, optional IRQ/poll timing).
+3. Initialize bus once (`i2c_bus_init_once`).
+4. Keep runtime I2C access inside approved transport boundary.
+5. Define explicit error policy by result class.
+6. For async use, define callback, inflight state, and buffer lifetime ownership.
+7. Test with other active devices on same bus.
 
-## 11. Error Handling Strategy
+## 18. Checklist: Reviewing an I2C PR
 
-Recommended mapping:
-- `EINVAL`: bad arguments, misuse of API.
-- `ENOT_INIT`: bus/DMA path not initialized.
-- `EBUSY`: bus or DMA path not available right now.
-- `ETIMEOUT`: transfer timeout.
-- `EIO`: low-level failure (NACK/abort/other I/O failure).
+1. Are layer boundaries preserved (`dev/*` -> `i2c_bus` / `i2c_reg_io`)?
+2. Are async callback/lifetime rules respected?
+3. Is error handling explicit and bounded?
+4. Is scheduling impact considered (`i2c_bus_poll()` cadence, callback weight)?
+5. Are new constants/macros justified and documented?
+6. Are docs updated to reflect behavior changes?
 
-Guidelines:
-- fail fast on init/programming failures,
-- for runtime read errors on shared bus, optionally attempt:
-  - `i2c_bus_recover()`,
-  - reprogram essential device registers.
+## 19. Known Limitations and Future Work
 
-MPR121 follows this approach in task loop recovery path.
+Current known constraints:
+- transport remains non-reentrant by contract,
+- one inflight async transaction per bus in current `i2c_bus` policy,
+- no generic instrumentation framework in this iteration.
 
+Possible future improvements (only if justified by measured need):
+- explicit non-blocking register helper variants for high-rate sensors,
+- bus-load aware pacing policies for mixed OLED + input devices,
+- deliberate reentrancy model update with proof/tests.
 
-## 12. Polling and Scheduling Requirements
+## 20. Quick Reference
 
-If DMA is used:
-- `i2c_bus_poll()` must be called frequently from main context.
-- Avoid long blocking sections in the same context that would starve polling.
-
-If DMA is not used:
-- polling is still safe to call, but not required for I2C progress.
-
-For mixed devices (example OLED + MPR121):
-- non-display device task should avoid I2C operations while DMA is active if timing is sensitive.
-- current MPR121 task checks `i2c_bus_dma_busy()` and defers read.
-
-
-## 13. Performance Notes
-
-- OLED full-frame DMA is optimized for throughput and reduced blocking time.
-- Register devices prioritize correctness and simplicity through blocking `i2c_reg_io`.
-- High bus baud can work in practice but may exceed some device datasheet guarantees.
-  - Current MPR121 code emits warning if bus baud is above 400 kHz.
-
-
-## 14. Build and Feature Flags
-
-Key build flags:
-- `ENABLE_OLED`
-- `ENABLE_MPR121`
-- `ENABLE_I2C_DMA`
-
-Source wiring:
-- `i2c_reg_io.c` is part of core build sources.
-- MPR121 is implemented in-tree and no longer depends on external `pico-mpr121`.
-
-
-## 15. Checklist: Adding a New I2C Device
-
-1. Decide device class:
-   - register-oriented -> use `i2c_reg_io`,
-   - stream/frame-oriented -> use `i2c_bus` and possibly DMA descriptors.
-2. Add config macros (address, bus id, optional timing/IRQ pins).
-3. Initialize bus with `i2c_bus_init_once`.
-4. Keep all runtime I2C calls inside `i2c_bus` boundary.
-5. If DMA is needed:
-   - initialize DMA through `i2c_bus_dma_init`,
-   - provide persistent command buffers,
-   - call `i2c_bus_poll()` regularly.
-6. Handle errors with clear policy (retry/recover/fail).
-7. Add integration test scenario with other active I2C devices on same bus.
-
-
-## 16. Checklist: Reviewing an I2C PR
-
-- Are layer boundaries respected (`dev` does not leak into transport internals)?
-- Is API usage status-oriented (`i2c_bus_result_t`) where appropriate?
-- Are DMA buffer lifetime rules satisfied?
-- Is non-reentrant contract respected?
-- Are timeouts and recovery behavior explicit and justified?
-- If device shares bus with OLED DMA, is contention behavior addressed?
-- Are configuration macros documented and sane by default?
-
-
-## 17. Known Limitations and Future Improvements
-
-Current limitations:
-- DMA helper is TX-only.
-- `i2c_reg_write_seq` stack-bound payload limit.
-- Non-reentrant global contract (single main execution context).
-
-### 17.1 Why Full Non-Blocking I2C Is Deferred
-
-For an audio-oriented device, a fully non-blocking I2C API would likely be beneficial.
-
-Observed behavior in this project:
-- I2C activity can introduce audible hiccups in USB-audio scenarios without overclocking.
-- Overclocking can reduce or hide the issue in practice, but it does not remove the underlying scheduling/contention pressure from I2C operations.
-
-Why this is deferred for now:
-- implementing full non-blocking support for `read/write/write_read` is a significant architecture change,
-- it requires request orchestration, completion-driven state machines, and broader driver migration,
-- this is currently larger than the immediate project priorities.
-
-Status:
-- intentionally parked as a long-term improvement,
-- not considered a near-term requirement for ongoing feature development.
-
-Reasonable future improvements:
-- optional chunked large register writes in `i2c_reg_io`,
-- explicit instrumentation counters for bus/DMA health,
-- stricter debug assertions for ISR-context misuse.
-
-
-## 18. Quick Reference
-
-- Use `i2c_bus` for transport.
+- Use `i2c_bus` for transport operations.
 - Use `i2c_reg_io` for register devices.
-- Keep `dev/*` free from low-level I2C/DMA register manipulation.
-- Poll `i2c_bus_poll()` when DMA is enabled.
-- Respect DMA buffer lifetime.
+- Keep `dev/*` independent from DMA internals.
+- Drive async progress via `i2c_bus_poll()` in main context.
+- Treat `EBUSY` as backpressure, not immediate failure.
+- Keep recover logic bounded and explicit.

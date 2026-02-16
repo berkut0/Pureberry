@@ -1,9 +1,9 @@
 /*
- * I2C TX via DMA (general-purpose helper).
+ * I2C transport via DMA-fed IC_DATA_CMD stream.
  *
  * This implementation drives the DW_apb_i2c controller by DMA-writing words to IC_DATA_CMD.
- * DMA completion only means "all words were written to the TX FIFO", not "STOP happened on the bus",
- * so we also wait for STOP_DET (or detect TX_ABRT) before completing a transaction.
+ * DMA completion only means "all words were written to the TX FIFO", not "STOP happened on
+ * the bus", so we also wait for STOP_DET (or detect TX_ABRT) before completing a transaction.
  */
 
 #include "drv/i2c_dma.h"
@@ -15,10 +15,6 @@
 #include "hardware/regs/dreq.h"
 #include "hardware/regs/i2c.h"
 
-#ifndef I2C_DMA_QUEUE_LEN
-#define I2C_DMA_QUEUE_LEN 8u
-#endif
-
 static i2c_dma_t *g_dma_by_channel[NUM_DMA_CHANNELS];
 static bool g_dma_irq_installed[2];
 
@@ -26,8 +22,6 @@ static inline uint i2c_dma_dreq_for_inst(i2c_inst_t *i2c) {
     if (i2c == i2c0) return DREQ_I2C0_TX;
     return DREQ_I2C1_TX;
 }
-
-static void i2c_dma_start_next(i2c_dma_t *ctx);
 
 static void __isr i2c_dma_irq_common(uint8_t irq_index) {
     // Process all channels that triggered this DMA IRQ.
@@ -83,13 +77,17 @@ static void i2c_dma_abort_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
     ctx->hw->enable = 1;
     i2c_dma_clear_i2c_irq_latches(ctx);
 
-    if (ctx->current.done) {
-        ctx->current.done(ctx->current.user, result);
-    }
+    i2c_dma_done_cb_t done = ctx->current.done;
+    void *done_user = ctx->current.user;
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
+    ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
+
+    if (done) {
+        done(done_user, result);
+    }
 }
 
 static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
@@ -98,13 +96,17 @@ static void i2c_dma_complete_active(i2c_dma_t *ctx, i2c_dma_result_t result) {
         dma_irqn_acknowledge_channel(ctx->dma_irq_index, (uint)ctx->dma_chan);
         dma_irqn_set_channel_enabled(ctx->dma_irq_index, (uint)ctx->dma_chan, false);
     }
-    if (ctx->current.done) {
-        ctx->current.done(ctx->current.user, result);
-    }
+    i2c_dma_done_cb_t done = ctx->current.done;
+    void *done_user = ctx->current.user;
 
     ctx->state = I2C_DMA_STATE_IDLE;
     ctx->deadline_valid = false;
+    ctx->rx_received = 0u;
     memset(&ctx->current, 0, sizeof(ctx->current));
+
+    if (done) {
+        done(done_user, result);
+    }
 }
 
 static bool i2c_dma_deadline_expired(i2c_dma_t *ctx) {
@@ -112,8 +114,22 @@ static bool i2c_dma_deadline_expired(i2c_dma_t *ctx) {
     return absolute_time_diff_us(get_absolute_time(), ctx->deadline) < 0;
 }
 
+static bool i2c_dma_drain_rx(i2c_dma_t *ctx) {
+    bool overflow = false;
+    while (ctx->hw->rxflr != 0u) {
+        uint32_t v = ctx->hw->data_cmd;
+        if (ctx->rx_received < ctx->current.rx_count && ctx->current.rx) {
+            ctx->current.rx[ctx->rx_received++] = (uint8_t)(v & 0xFFu);
+        } else {
+            overflow = true;
+        }
+    }
+    return !overflow;
+}
+
 static void i2c_dma_begin_txn(i2c_dma_t *ctx, i2c_dma_txn_t const *t) {
     ctx->current = *t;
+    ctx->rx_received = 0u;
     ctx->last_abort_source = 0u;
 
     if (t->timeout_us > 0u) {
@@ -153,13 +169,6 @@ static void i2c_dma_begin_txn(i2c_dma_t *ctx, i2c_dma_txn_t const *t) {
     ctx->state = I2C_DMA_STATE_DMA_ACTIVE;
 }
 
-static void i2c_dma_start_next(i2c_dma_t *ctx) {
-    if (ctx->state != I2C_DMA_STATE_IDLE) return;
-    i2c_dma_txn_t t;
-    if (!queue_try_remove(&ctx->q, &t)) return;
-    i2c_dma_begin_txn(ctx, &t);
-}
-
 void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq_index) {
     if (!ctx) return;
     memset(ctx, 0, sizeof(*ctx));
@@ -192,7 +201,6 @@ void i2c_dma_init(i2c_dma_t *ctx, i2c_inst_t *i2c, int dma_chan, uint8_t dma_irq
         i2c_dma_install_irq(ctx->dma_irq_index);
     }
 
-    queue_init(&ctx->q, sizeof(i2c_dma_txn_t), (uint)I2C_DMA_QUEUE_LEN);
     ctx->state = I2C_DMA_STATE_IDLE;
     i2c_dma_clear_i2c_irq_latches(ctx);
 }
@@ -203,9 +211,13 @@ bool i2c_dma_submit(i2c_dma_t *ctx, const i2c_dma_txn_t *txn) {
     if (ctx->dma_chan < 0) return false;
     if (!txn->cmds || txn->cmd_count == 0) return false;
     if (txn->addr7 >= 0x80) return false;
+    if (txn->rx_count > 0u && !txn->rx) return false;
+    if (txn->rx_count > txn->cmd_count) return false;
+    if (ctx->state != I2C_DMA_STATE_IDLE) return false;
+    if (ctx->current.cmd_count != 0u) return false;
+    if (dma_channel_is_busy((uint)ctx->dma_chan)) return false;
 
-    if (!queue_try_add(&ctx->q, txn)) return false;
-    i2c_dma_poll(ctx);
+    i2c_dma_begin_txn(ctx, txn);
     return true;
 }
 
@@ -219,13 +231,11 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
     }
 
     if (ctx->state == I2C_DMA_STATE_IDLE) {
-        i2c_dma_start_next(ctx);
         return;
     }
 
     if (i2c_dma_deadline_expired(ctx)) {
         i2c_dma_abort_active(ctx, I2C_DMA_RESULT_ETIMEOUT);
-        i2c_dma_start_next(ctx);
         return;
     }
 
@@ -234,7 +244,11 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
         ctx->last_abort_source = ctx->hw->tx_abrt_source;
         (void)ctx->hw->clr_tx_abrt;
         i2c_dma_abort_active(ctx, I2C_DMA_RESULT_EABORT);
-        i2c_dma_start_next(ctx);
+        return;
+    }
+
+    if (!i2c_dma_drain_rx(ctx)) {
+        i2c_dma_abort_active(ctx, I2C_DMA_RESULT_EABORT);
         return;
     }
 
@@ -244,10 +258,14 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
     }
 
     if (ctx->state == I2C_DMA_STATE_WAIT_STOP) {
+        raw = ctx->hw->raw_intr_stat;
         if (raw & I2C_IC_RAW_INTR_STAT_STOP_DET_BITS) {
             (void)ctx->hw->clr_stop_det;
-            i2c_dma_complete_active(ctx, I2C_DMA_RESULT_OK);
-            i2c_dma_start_next(ctx);
+            if (!i2c_dma_drain_rx(ctx) || ctx->rx_received != ctx->current.rx_count) {
+                i2c_dma_abort_active(ctx, I2C_DMA_RESULT_EABORT);
+            } else {
+                i2c_dma_complete_active(ctx, I2C_DMA_RESULT_OK);
+            }
         }
     }
 }
@@ -255,9 +273,7 @@ void i2c_dma_poll(i2c_dma_t *ctx) {
 bool i2c_dma_busy(const i2c_dma_t *ctx) {
     if (!ctx) return false;
     if (ctx->state != I2C_DMA_STATE_IDLE) return true;
-    if (ctx->dma_chan >= 0 && dma_channel_is_busy((uint)ctx->dma_chan)) return true;
-    queue_t *q = (queue_t *)&ctx->q;
-    return !queue_is_empty(q);
+    return (ctx->dma_chan >= 0 && dma_channel_is_busy((uint)ctx->dma_chan));
 }
 
 uint32_t i2c_dma_get_last_abort_source(const i2c_dma_t *ctx) {

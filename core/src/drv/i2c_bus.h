@@ -26,14 +26,18 @@ typedef enum {
     I2C_BUS_RESULT_EIO,
 } i2c_bus_result_t;
 
+typedef void (*i2c_bus_done_cb_t)(void *user, i2c_bus_result_t result);
+
 bool i2c_bus_init_once(i2c_bus_id_t id);
 uint32_t i2c_bus_get_baud_hz(i2c_bus_id_t id);
 
 // Concurrency contract:
 // - This module is non-reentrant.
 // - Call from one main execution context (not from ISR).
-// - DMA completion is advanced by i2c_bus_poll() from that same context.
+// - Async completion is advanced by i2c_bus_poll() from that same context.
 // Preferred device-layer API: status-oriented helpers.
+// Blocking helpers are "fail-fast" under async contention:
+// - if an async DMA transfer is active, they return EBUSY immediately.
 i2c_bus_result_t i2c_bus_write(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop);
 i2c_bus_result_t i2c_bus_read(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len);
 i2c_bus_result_t i2c_bus_write_read(
@@ -45,38 +49,47 @@ i2c_bus_result_t i2c_bus_write_read(
     size_t rx_len
 );
 
-// Compatibility API: raw transfer count / pico error values.
-int i2c_bus_write_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *buf, size_t len, bool nostop);
-int i2c_bus_read_timeout(i2c_bus_id_t id, uint8_t addr7, uint8_t *buf, size_t len);
-int i2c_bus_write_read_timeout(i2c_bus_id_t id, uint8_t addr7, const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_len);
+// Non-blocking transport API.
+// Buffer lifetime contract:
+// - `tx` and `rx` buffers (when provided) and `user` must remain valid until callback.
+// Callback contract:
+// - `done` must not be NULL (NULL submit is rejected with EINVAL).
+// - callback is called from i2c_bus_poll() context, never from ISR.
+// - callback is called exactly once for accepted submissions.
+i2c_bus_result_t i2c_bus_write_async(
+    i2c_bus_id_t id,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint32_t timeout_us,
+    i2c_bus_done_cb_t done,
+    void *user
+);
+
+i2c_bus_result_t i2c_bus_read_async(
+    i2c_bus_id_t id,
+    uint8_t addr7,
+    uint8_t *rx,
+    size_t rx_len,
+    uint32_t timeout_us,
+    i2c_bus_done_cb_t done,
+    void *user
+);
+
+i2c_bus_result_t i2c_bus_write_read_async(
+    i2c_bus_id_t id,
+    uint8_t addr7,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len,
+    uint32_t timeout_us,
+    i2c_bus_done_cb_t done,
+    void *user
+);
 
 bool i2c_bus_recover(i2c_bus_id_t id);
 void i2c_bus_poll(void);
-
-#ifdef ENABLE_I2C_DMA
-i2c_bus_result_t i2c_bus_dma_init(i2c_bus_id_t id, int dma_chan, uint8_t dma_irq_index);
-bool i2c_bus_dma_ready(i2c_bus_id_t id);
-bool i2c_bus_dma_busy(i2c_bus_id_t id);
-typedef struct {
-    const uint8_t *bytes;
-    size_t len;
-    bool restart_first;
-    uint32_t timeout_us;
-    uint32_t *cmd_buf;
-    size_t cmd_buf_words;
-} i2c_bus_dma_write_req_t;
-
-// Submit an ordered sequence of DMA write requests.
-// - Converts request bytes into IC_DATA_CMD words inside i2c_bus.
-// - Caller owns cmd_buf storage and must keep it valid until transfer completion.
-// - Requires DMA engine idle before queueing the sequence.
-i2c_bus_result_t i2c_bus_dma_submit_writes(
-    i2c_bus_id_t id,
-    uint8_t addr7,
-    const i2c_bus_dma_write_req_t *reqs,
-    size_t req_count
-);
-#endif
 
 #ifdef __cplusplus
 }

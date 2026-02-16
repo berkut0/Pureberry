@@ -49,7 +49,6 @@ set(CMAKE_CXX_STANDARD 17)
 option(ENABLE_WS2812 "Enable WS2812 LED support" ON)
 option(ENABLE_USB_MIDI "Enable USB MIDI support (CDC+MIDI composite device)" OFF)
 option(ENABLE_OLED "Enable SSD1306 OLED (I2C) support" OFF)
-option(ENABLE_I2C_DMA "Enable non-blocking I2C TX via DMA helper" OFF)
 option(ENABLE_MPR121 "Enable MPR121 capacitive touch (I2C) support" OFF)
 set(
     FW_SYS_CLOCK_PROFILE_OVERRIDE
@@ -83,14 +82,6 @@ if(NOT "${FIRMWARE_LOG_LEVEL}" STREQUAL "")
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE FIRMWARE_LOG_LEVEL=${FIRMWARE_LOG_LEVEL})
 endif()
 
-# Optional I2C DMA helper (device drivers may use it to avoid blocking I2C writes)
-if(ENABLE_I2C_DMA)
-    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_I2C_DMA)
-    target_sources(${PROJECT_NAME}.elf PRIVATE
-        src/drv/i2c_dma.c
-    )
-endif()
-
 # Core firmware source files
 target_sources(${PROJECT_NAME}.elf PRIVATE
     src/main.c
@@ -107,6 +98,7 @@ target_sources(${PROJECT_NAME}.elf PRIVATE
     src/ui/screens/ui_screen_main_menu.c
     src/ui/screens/ui_screen_waveform.c
     src/drv/i2c_bus.c
+    src/drv/i2c_dma.c
     src/drv/i2c_reg_io.c
     src/drv/spi_bus.c
     src/dev/adc_pots.c
