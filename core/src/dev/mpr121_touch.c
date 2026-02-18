@@ -255,15 +255,18 @@ static i2c_reg_io_result_t mpr121_read_and_push(void) {
         return I2C_REG_IO_OK;
     }
 
-    /* Push filtered data (0..1) only for mapped touchN_level inputs. */
+    /* Read all filtered electrode levels in one burst, then publish only mapped touchN_level inputs. */
+    uint8_t reg = (uint8_t)MPR121_ELECTRODE_FILTERED_DATA_REG;
+    uint8_t level_bytes[MPR121_NUM_ELECTRODES * 2u];
+    res = i2c_bus_write_read(mpr121_bus_id(), mpr121_addr7(), &reg, 1u, level_bytes, sizeof(level_bytes));
+    if (res != I2C_REG_IO_OK) {
+        return res;
+    }
+
     for (unsigned i = 0; i < (unsigned)MPR121_NUM_ELECTRODES; i++) {
         if (!g_touch_level_push_enabled[i]) continue;
-        uint16_t raw = 0u;
-        uint8_t reg = (uint8_t)(MPR121_ELECTRODE_FILTERED_DATA_REG + ((uint8_t)i * 2u));
-        res = mpr121_read_reg16(reg, &raw);
-        if (res != I2C_REG_IO_OK) {
-            return res;
-        }
+        uint16_t raw = (uint16_t)level_bytes[i * 2u]
+            | ((uint16_t)level_bytes[i * 2u + 1u] << 8);
         raw &= 0x03ffu;
         float level = (float)raw / MPR121_FILTERED_DATA_MAX;
         if (level > 1.0f) level = 1.0f;

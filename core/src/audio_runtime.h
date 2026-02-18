@@ -38,6 +38,12 @@ void audio_runtime_start(struct HeavyContextInterface *ctx);
  */
 uint32_t audio_runtime_get_core1_dsp_load_avg_permille(void);
 
+/**
+ * Number of USB input blocks where core1 received fewer frames than requested.
+ * Useful to correlate audible input glitches with ring-buffer starvation.
+ */
+uint32_t audio_runtime_get_core1_usb_short_read_blocks(void);
+
 #ifdef __cplusplus
 }
 #endif

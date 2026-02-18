@@ -10,7 +10,7 @@
 #include <math.h>
 #include <string.h>
 
-#ifdef ENABLE_OLED
+#if defined(ENABLE_OLED) && (AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE != 0)
 #include "multicore_display.h"
 #endif
 
@@ -30,6 +30,9 @@
 
 #ifdef ENABLE_USB_AUDIO
 #define AUDIO_RUNTIME_PRODUCER_BUFFER_COUNT AUDIO_RUNTIME_USB_PRODUCER_BUFFER_COUNT
+#ifndef USB_AUDIO_UNDERRUN_BLEND_FRAMES
+#define USB_AUDIO_UNDERRUN_BLEND_FRAMES 24u
+#endif
 #else
 #define AUDIO_RUNTIME_PRODUCER_BUFFER_COUNT 3u
 #endif
@@ -56,6 +59,7 @@ static audio_buffer_pool_t *audio_pool;
 static HeavyContextInterface *runtime_context;
 static bool core1_started;
 static uint32_t g_core1_dsp_avg_permille;
+static uint32_t g_core1_usb_short_read_blocks;
 
 static inline float sanitize_audio_sample(float sample) {
     // Safety guard: block NaN/Inf propagation into PCM conversion.
@@ -86,6 +90,9 @@ static void audio_core1_main(void) {
 #ifdef ENABLE_USB_AUDIO
     static int16_t usb_in_i16[AUDIO_RUNTIME_BUFFER_SIZE];
     static bool usb_in_primed;
+    static float usb_hold_l;
+    static float usb_hold_r;
+    static bool usb_gap_active;
 #endif
     static int hv_in_ch = -1;
     static int hv_out_ch = -1;
@@ -131,6 +138,9 @@ static void audio_core1_main(void) {
             if (hv_in_ch > 0) {
                 if (!usb_audio_is_streaming()) {
                     usb_in_primed = false;
+                    usb_hold_l = 0.0f;
+                    usb_hold_r = 0.0f;
+                    usb_gap_active = false;
                 }
 
                 bool fill_with_silence = false;
@@ -144,17 +154,50 @@ static void audio_core1_main(void) {
                 }
 
                 if (fill_with_silence) {
-                    memset(audio_in_buffer, 0, block_size * 2u * sizeof(float));
+                    usb_gap_active = true;
+                    for (size_t i = 0; i < block_size; i++) {
+                        audio_in_buffer[(i * 2u) + 0u] = usb_hold_l;
+                        audio_in_buffer[(i * 2u) + 1u] = usb_hold_r;
+                    }
                 } else {
                     size_t got_frames = usb_audio_pop_i16(usb_in_i16, block_size);
+                    if (got_frames == 0u) {
+                        usb_gap_active = true;
+                    }
                     if (got_frames < block_size) {
-                        memset(
-                            usb_in_i16 + (got_frames * 2u),
-                            0,
-                            (block_size - got_frames) * 2u * sizeof(int16_t)
-                        );
+                        __atomic_fetch_add(&g_core1_usb_short_read_blocks, 1u, __ATOMIC_RELAXED);
+                        usb_gap_active = true;
+                        int16_t hold_l_i16 = (int16_t)(usb_hold_l * 32767.0f);
+                        int16_t hold_r_i16 = (int16_t)(usb_hold_r * 32767.0f);
+                        for (size_t i = got_frames; i < block_size; i++) {
+                            usb_in_i16[(i * 2u) + 0u] = hold_l_i16;
+                            usb_in_i16[(i * 2u) + 1u] = hold_r_i16;
+                        }
                     }
                     int16_to_float(usb_in_i16, audio_in_buffer, block_size * 2u);
+
+                    if (got_frames > 0u && usb_gap_active) {
+                        size_t blend_frames = got_frames;
+                        if (blend_frames > (size_t)USB_AUDIO_UNDERRUN_BLEND_FRAMES) {
+                            blend_frames = (size_t)USB_AUDIO_UNDERRUN_BLEND_FRAMES;
+                        }
+                        for (size_t i = 0; i < blend_frames; i++) {
+                            float alpha = (float)(i + 1u) / (float)(blend_frames + 1u);
+                            float in_l = audio_in_buffer[(i * 2u) + 0u];
+                            float in_r = audio_in_buffer[(i * 2u) + 1u];
+                            audio_in_buffer[(i * 2u) + 0u] = usb_hold_l + (in_l - usb_hold_l) * alpha;
+                            audio_in_buffer[(i * 2u) + 1u] = usb_hold_r + (in_r - usb_hold_r) * alpha;
+                        }
+                    }
+
+                    if (got_frames > 0u) {
+                        size_t last = got_frames - 1u;
+                        usb_hold_l = audio_in_buffer[(last * 2u) + 0u];
+                        usb_hold_r = audio_in_buffer[(last * 2u) + 1u];
+                    }
+                    if (got_frames == block_size) {
+                        usb_gap_active = false;
+                    }
                 }
 
                 if (hv_in_ch == 1) {
@@ -192,7 +235,7 @@ static void audio_core1_main(void) {
                 dsp_accum_frames = 0u;
             }
 
-#ifdef ENABLE_OLED
+#if defined(ENABLE_OLED) && (AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE != 0)
             multicore_display_capture_interleaved(audio_out_buffer, block_size);
 #endif
             int16_t *block_samples = samples + (block * AUDIO_RUNTIME_BLOCK_SIZE * 2u);
@@ -244,6 +287,7 @@ void audio_runtime_start(struct HeavyContextInterface *ctx) {
     if (core1_started || ctx == NULL) return;
     runtime_context = (HeavyContextInterface *) ctx;
     __atomic_store_n(&g_core1_dsp_avg_permille, 0u, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_core1_usb_short_read_blocks, 0u, __ATOMIC_RELAXED);
     __sync_synchronize();
     multicore_launch_core1(audio_core1_main);
     core1_started = true;
@@ -251,4 +295,8 @@ void audio_runtime_start(struct HeavyContextInterface *ctx) {
 
 uint32_t audio_runtime_get_core1_dsp_load_avg_permille(void) {
     return __atomic_load_n(&g_core1_dsp_avg_permille, __ATOMIC_RELAXED);
+}
+
+uint32_t audio_runtime_get_core1_usb_short_read_blocks(void) {
+    return __atomic_load_n(&g_core1_usb_short_read_blocks, __ATOMIC_RELAXED);
 }

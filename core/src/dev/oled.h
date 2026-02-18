@@ -24,6 +24,9 @@ bool oled_backend_ready(void);
 /** Get active u8g2 canvas; returns NULL when backend is unavailable. */
 oled_canvas_t *oled_backend_u8g2(void);
 
+/** Returns true when a new framebuffer flush can be queued immediately. */
+bool oled_backend_can_flush(void);
+
 /** Flush current framebuffer to OLED (blocking or DMA-backed, depending on build). */
 void oled_backend_flush(void);
 

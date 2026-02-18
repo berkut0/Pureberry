@@ -17,6 +17,7 @@
  * Optional in config_local.h:
  *   - #define USB_AUDIO_RING_FRAMES 2048
  *   - #define USB_AUDIO_TARGET_FILL_FRAMES 512
+ *   - #define AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE 0  // isolate core1 capture impact while keeping OLED enabled
  */
 
 #ifndef CONFIG_LOCAL_H
@@ -95,6 +96,10 @@
 // Uncomment and override if your wiring differs. If 1 MHz is unstable, try 400000.
 //
 // #define OLED_REFRESH_FPS 60  // display FPS; frame ms and wave decim are derived
+// #define USB_AUDIO_TARGET_FILL_FRAMES 512  // keep explicit for reproducible USB A/B tests across OLED ON/OFF
+// #define AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE 1  // set 0 for OLED-on diagnostics without core1 waveform capture
+// #define OLED_FLUSH_USE_U8G2_SENDBUFFER 1  // A/B: compare legacy blocking u8g2 flush vs async DMA flush
+// #define UI_DISABLE_OLED_WHILE_USB_AUDIO_STREAMING 1  // show "USB AUDIO ON"; CENTER enables UI, long-press L+R returns safe mode
 // #define I2C_BUS0_INSTANCE 1  // 0 = i2c0, 1 = i2c1
 // #define I2C_BUS0_SDA_PIN 2
 // #define I2C_BUS0_SCL_PIN 3

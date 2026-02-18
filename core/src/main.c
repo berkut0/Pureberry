@@ -129,12 +129,54 @@ static void service_peripherals(void) {
 #ifdef ENABLE_WS2812
     service_led_from_bus();
 #endif
+
+#ifdef ENABLE_USB_AUDIO
+    service_usb();
+#endif
     i2c_bus_poll();
+
+#ifdef ENABLE_USB_AUDIO
+    service_usb();
+#endif
 #ifdef ENABLE_MPR121
     mpr121_touch_task();
 #endif
+
+#ifdef ENABLE_USB_AUDIO
+    service_usb();
+#endif
     ui_input_task();
+
+#ifdef ENABLE_USB_AUDIO
+    service_usb();
+    bool skip_ui = false;
+    static bool ui_skip_low_watermark_toggle;
+    if (usb_audio_is_streaming()) {
+        uint32_t low_wm = (uint32_t)USB_AUDIO_TARGET_FILL_FRAMES / 2u;
+        if (low_wm == 0u) {
+            low_wm = 1u;
+        }
+        uint32_t fill = usb_audio_get_ring_fill_frames();
+        if (fill < low_wm) {
+            // Soft backpressure: under low ring fill, skip every second UI render cycle.
+            ui_skip_low_watermark_toggle = !ui_skip_low_watermark_toggle;
+            skip_ui = ui_skip_low_watermark_toggle;
+        } else {
+            ui_skip_low_watermark_toggle = false;
+        }
+    } else {
+        ui_skip_low_watermark_toggle = false;
+    }
+    if (!skip_ui) {
+        ui_task();
+    }
+#else
     ui_task();
+#endif
+
+#ifdef ENABLE_USB_AUDIO
+    service_usb();
+#endif
     adc_pots_task();
 }
 
@@ -153,6 +195,8 @@ int main() {
         service_usb();
         service_peripherals();
 #ifdef ENABLE_USB_AUDIO
+        // Run USB service again after peripheral/UI work to reduce core0 service gaps.
+        service_usb();
         tight_loop_contents();
 #else
         sleep_us(MAIN_LOOP_SLEEP_US);

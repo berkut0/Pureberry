@@ -2,6 +2,7 @@
 
 #ifdef ENABLE_OLED
 
+#include <math.h>
 #include <string.h>
 #include "config.h"
 
@@ -21,6 +22,9 @@ static inline uint8_t clamp_u8(int v) {
 }
 
 static inline uint8_t sample_to_y(float s) {
+    if (!isfinite(s)) {
+        return (uint8_t)((OLED_HEIGHT - 1u) / 2u);
+    }
     // Clamp to [-1, 1]
     if (s > 1.0f) s = 1.0f;
     if (s < -1.0f) s = -1.0f;
@@ -81,4 +85,3 @@ bool multicore_display_read_latest(uint8_t out_y[MULTICORE_WAVEFORM_WIDTH]) {
 }
 
 #endif // ENABLE_OLED
-

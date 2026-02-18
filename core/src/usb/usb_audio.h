@@ -41,6 +41,12 @@ uint32_t usb_audio_get_last_rx_bytes(void);
 /** Current fill level of the inter-core ring buffer in stereo frames. */
 uint32_t usb_audio_get_ring_fill_frames(void);
 
+/**
+ * Take ring fill window (min/max since previous take) and reset window start to current fill.
+ * Intended for low-rate diagnostics (for example, once per second on core0).
+ */
+void usb_audio_take_ring_fill_window(uint32_t *out_min_frames, uint32_t *out_max_frames);
+
 /** Last feedback value (16.16 fixed-point frames per USB frame) set by the application. */
 uint32_t usb_audio_get_last_feedback_q16_16(void);
 

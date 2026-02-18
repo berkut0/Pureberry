@@ -1,153 +1,215 @@
-# USB Audio Deterministic Path Refactor Plan (v1)
+﻿# USB Audio + OLED Input Glitch Refactor Plan (v2)
 
 Last updated: 2026-02-16
 
-## 1) Context
+## 1) Problem Statement
 
-Current status:
-- catastrophic "runaway/scream" events were mitigated by output safety guards,
-- rare short stutters still happen (roughly once in 15-60 seconds, sometimes rarer),
-- I2C/MPR121 is no longer the primary suspect for these residual stutters.
+Observed on hardware:
+- USB audio input path is relatively stable with `ENABLE_OLED=OFF`.
+- With `ENABLE_OLED=ON`, audible input artifacts appear: phase slips, short stalls, and spikes.
+- Overclocking improves behavior but appears to mask timing pressure instead of removing root cause.
 
-Observed architecture facts in this repo:
-- USB audio RX is handled on core0 (`core/src/usb/usb_audio.c`),
-- Heavy + I2S rendering runs on core1 (`core/src/audio_runtime.c`),
-- core1 currently includes a runtime USB-rate branch with resampling logic and FIFO shifting.
+Current architecture facts in this repo:
+- core1 runs Heavy + I2S (`core/src/audio_runtime.c`).
+- core0 services USB + I2C + UI (`core/src/main.c`).
+- USB host -> device audio uses core0 drain to ring and core1 pop from ring (`core/src/usb/usb_audio.c`).
+- OLED flush is async DMA-backed (`core/src/dev/oled.c`), but UI draw and core0 scheduling still consume service budget.
+- `multicore_display_capture_interleaved()` runs in core1 audio loop when `ENABLE_OLED` is enabled.
 
-Working hypothesis:
-- residual stutter is caused by variable execution cost and timing jitter in the core1 USB input path, not by missing "extra DMA for USB".
+## 2) Ranked Hypotheses
 
-## 2) Locked Constraints
+H1 (highest probability):
+- Core0 USB service cadence is insufficient under OLED/UI load.
+- Result: ring fill dips, core1 short-reads, audible discontinuities.
 
-1. Priorities:
-- determinism in audio path,
-- maintainability and readability,
-- minimalism (no unnecessary entities/files/APIs).
+Evidence:
+- TinyUSB config already documents queue pressure with USB audio + OLED (`core/src/tusb_config.h`).
+- `usb_audio_task()` has bounded per-call draining (`USB_AUDIO_MAX_PULL_CHUNKS_PER_TASK`).
+- Artifacts improve with OC, consistent with service-budget shortage.
 
-2. No backward-compatibility burden for old behavior:
-- we can simplify aggressively if resulting architecture is cleaner and safer.
+H2:
+- Configuration coupling changes USB behavior when OLED is enabled.
 
-3. Layering:
-- USB transport details stay in `usb_audio.*`,
-- Heavy/I2S runtime stays in `audio_runtime.*`,
-- no DMA/I2C leakage into USB audio architecture.
+Evidence:
+- `USB_AUDIO_TARGET_FILL_FRAMES` defaults change under `ENABLE_OLED` in `core/src/config.h`.
+- A/B comparisons may currently compare different transport operating points.
 
-4. Scope discipline:
-- do not redesign unrelated subsystems in this iteration.
+H3:
+- `multicore_display_capture_interleaved()` adds enough core1 overhead to push runtime over edge in borderline cases.
 
-## 3) Goals
+Evidence:
+- Function executes in core1 loop.
+- Expected cost is moderate, but still part of hot path and should be measured, not assumed.
 
-1. Make USB input path to Heavy deterministic per audio block.
-2. Remove runtime complexity that causes rare timing spikes.
-3. Keep public usage simple for patch/device code.
-4. Preserve stable behavior with `--usb-audio --oled --mpr121`.
+H4:
+- Optional I2C peers (for example MPR121) increase contention and worsen timing in OLED builds.
 
-## 4) Non-Goals
+## 3) Locked Constraints
 
-1. No new USB audio features (mic path, multirate expansion, new descriptors).
-2. No extra observability framework in this sprint.
-3. No generic RTOS/task-system redesign.
+1. Multicore contract remains strict:
+- Heavy API calls only on core1 after audio start.
+- I/O remains on core0.
 
-## 5) Architecture Decision
+2. RT safety:
+- No blocking I/O/logging/malloc in core1 audio loop.
 
-Decision for this refactor:
-- lock USB audio stream to 48 kHz in this firmware build,
-- remove runtime sample-rate adaptation/resampler path from core1,
-- keep one deterministic "pop + convert + process" flow per block.
+3. Transport semantics must not change silently:
+- `ctrl_queue` overflow policy stays "drop newest".
+- OLED and UI work stays outside core1 hardware I/O.
 
-Rationale:
-- Heavy/I2S runtime is fixed at 48 kHz already,
-- a fixed-rate path reduces branchy logic, memmove activity, and jitter risk,
-- this is the smallest change with the best probability of removing rare stutter.
+4. Minimalism:
+- Prefer minimal diffs and avoid unnecessary new modules/files.
+
+## 4) Refactor Goals
+
+1. Remove audible USB input glitches with `ENABLE_OLED=ON` without relying on overclocking.
+2. Make root-cause validation measurable (not ear-based only).
+3. Keep code deterministic and easier to reason about.
+4. Preserve existing feature set and project invariants.
+
+## 5) Non-Goals
+
+1. No new USB class features or descriptor redesign.
+2. No architectural migration to RTOS/tasks.
+3. No broad UI redesign outside what is needed for audio stability.
 
 ## 6) Execution Plan
 
-### Phase A: Freeze Runtime Contract to 48 kHz
+### Phase A: Observability First (No Behavior Change)
 
 Actions:
-1. Ensure accepted USB sample rate in control handlers is 48 kHz only.
-2. Keep descriptors/config aligned to 48 kHz-only operation for this phase.
-3. Keep behavior explicit in comments/docs.
+1. Add explicit runtime diagnostics for USB input stability:
+- ring fill snapshot/min/max window,
+- underrun delta per second,
+- overrun delta per second,
+- last RX bytes / available bytes trends.
+2. Expose diagnostics in existing System/Advanced UI stats path.
+3. Add a low-cost core1 counter for "short-read blocks" in USB input path.
 
-Files:
+Target files:
 - `core/src/usb/usb_audio.c`
-- `core/src/tusb_config.h` (only if needed for consistency wording/macros)
-
-Exit:
-- no runtime "sample-rate switch" path remains active.
-
-### Phase B: Remove Core1 Runtime Resampler Branch
-
-Actions:
-1. Delete/disable resampler FIFO state from `audio_core1_main`.
-2. Keep single fixed path:
-- pop interleaved int16 frames from USB ring,
-- zero-fill on short read,
-- convert to float,
-- feed Heavy input buffer.
-3. Keep existing priming logic only if it is still necessary and simple.
-
-Files:
+- `core/src/usb/usb_audio.h`
 - `core/src/audio_runtime.c`
+- `core/src/ui/system/ui_system_stats.c`
+- `core/src/ui/system/ui_system_stats.h`
+- `core/src/ui/mui/ui_mui_forms.c`
 
-Exit:
-- core1 USB input handling is branch-minimal and deterministic.
+Exit criteria:
+- We can correlate audible events with underrun/short-read telemetry.
 
-### Phase C: Simplify USB RX Pull Loop (Core0)
-
-Actions:
-1. Keep one straightforward FIFO-drain policy in `usb_audio_task`.
-2. Avoid unnecessary per-iteration complexity while preserving bounds checks.
-3. Keep feedback update behavior stable after simplification.
-
-Files:
-- `core/src/usb/usb_audio.c`
-
-Exit:
-- core0 RX path remains robust but easier to reason about.
-
-### Phase D: Docs Sync
+### Phase B: Remove Confounding A/B Variables
 
 Actions:
-1. Add a short section that this firmware revision is 48 kHz fixed for USB input path determinism.
-2. Document why this is intentional and what would be needed to reintroduce multirate later.
+1. Decouple default `USB_AUDIO_TARGET_FILL_FRAMES` from `ENABLE_OLED`.
+2. Keep OLED-specific tuning as explicit override in `config_local.h`, not hidden in feature toggle.
+3. Add comments documenting why this decoupling is needed for valid diagnostics.
 
-Files:
-- `notes/USB_AUDIO_PC_TO_RP2350_IMPLEMENTATION.md`
-- optionally `notes/I2C_DEVELOPER_GUIDE.md` (only if cross-reference is needed)
+Target files:
+- `core/src/config.h`
+- `core/src/config_local.h.example` (doc comment only)
 
-Exit:
-- architecture and constraints are explicit for future contributors.
+Exit criteria:
+- OLED ON/OFF comparison does not silently change USB ring target unless explicitly configured.
 
-## 7) Verification Protocol
+### Phase C: Core0 Service Cadence Refactor (Primary)
+
+Actions:
+1. Rework `service_peripherals()` ordering to prioritize USB audio drain cadence during streaming.
+2. Ensure no long section executes without re-entering `service_usb()`.
+3. Add a "UI backpressure by audio state" guard:
+- if USB audio is streaming and ring fill is below low watermark, skip one UI render cycle.
+4. Keep behavior deterministic and branch-light.
+
+Target files:
+- `core/src/main.c`
+- `core/src/ui/ui_manager.c` (if cadence gate is placed there)
+- `core/src/usb/usb_audio.c` (only if helper accessors are needed)
+
+Exit criteria:
+- Underrun counter remains flat in steady-state playback with OLED active.
+
+### Phase D: Core1 Hot-Path Isolation (Secondary)
+
+Actions:
+1. Introduce a dedicated compile-time switch for waveform capture path used by OLED UI feedback.
+2. Keep default behavior unchanged, but enable clean A/B without touching unrelated code.
+3. Measure impact of disabling capture under identical USB settings.
+
+Target files:
+- `core/src/audio_runtime.c`
+- `core/src/multicore_display.c`
+- `core/src/config.h` (switch definition)
+
+Exit criteria:
+- Quantified answer whether capture is causal, contributory, or negligible.
+
+### Phase E: OLED Workload Shaping (Only If Needed)
+
+Actions:
+1. If Phases B-C do not fully stabilize audio, reduce waveform rendering cost under streaming mode:
+- lower streaming FPS, and/or
+- reduce per-frame draw complexity.
+2. Keep UI responsive and readable.
+
+Target files:
+- `core/src/ui/screens/ui_screen_waveform.c`
+- `core/src/config.h`
+- `core/src/config_local.h.example`
+
+Exit criteria:
+- No audible discontinuities under target workload without overclock requirement.
+
+## 7) Verification Matrix
 
 Build entrypoint (mandatory):
-1. `python scripts/build_firmware.py .\pd-patches\adc_to_dac.pd --clean --usb-audio --mpr121 --oled`
-2. `python scripts/build_firmware.py .\pd-patches\adc_to_dac.pd --clean --usb-audio`
+1. `python scripts/build_firmware.py .\pd-patches\adc_to_dac_knob1.pd --clean -D ENABLE_USB_AUDIO=ON -D ENABLE_OLED=OFF`
+2. `python scripts/build_firmware.py .\pd-patches\adc_to_dac_knob1.pd --clean -D ENABLE_USB_AUDIO=ON -D ENABLE_OLED=ON`
+3. `python scripts/build_firmware.py .\pd-patches\adc_to_dac_knob1.pd --clean -D ENABLE_USB_AUDIO=ON -D ENABLE_OLED=ON -D ENABLE_MPR121=ON` (if used in real hardware setup)
 
-Hardware checks:
-1. 20-30 min continuous run with host audio input.
-2. Verify no severe runaway events and reduced/absent rare stutter.
-3. Repeat with OLED enabled and with periodic MPR121 touches.
-4. Confirm no regressions in normal audio-through behavior (`adc~ -> dac~`).
+Runtime tests:
+1. 20-30 min host playback at 48 kHz stereo with OLED waveform screen active.
+2. Repeat with menu screens and normal UI actions.
+3. Record telemetry snapshots every 1 s:
+- underrun count delta,
+- ring fill trend,
+- short-read blocks,
+- core1 DSP average load.
 
 Acceptance criteria:
-1. deterministic USB input path in code (no runtime resampler branch),
-2. stable audible behavior in long-run test,
-3. code complexity reduced versus pre-refactor version.
+1. No sustained underrun growth in steady-state with OLED enabled.
+2. No audible phase slips/spikes during long-run test.
+3. Behavior remains stable at baseline clock profile (without mandatory OC).
 
-## 8) Risks and Fallback
+## 8) Risk Register
 
-Risk:
-- some hosts may request unsupported sample-rate controls more aggressively.
+1. Risk:
+- Over-prioritizing USB service can starve other core0 tasks.
 
-Handling:
-1. respond predictably (reject unsupported rates, remain at 48 kHz),
-2. keep stream state coherent on host alt-setting changes,
-3. if needed, tighten host-control handling without reintroducing runtime resampling.
+Mitigation:
+- Use bounded gating and verify UI/input/peripheral responsiveness.
 
-## 9) Deferred Work (Next Sprint Candidate)
+2. Risk:
+- Added diagnostics increase overhead and influence timing.
 
-1. Reintroduce multirate support only if required by real use-case evidence.
-2. If reintroduced, keep it in transport-level rate adaptation, not in core1 hot path.
-3. Consider a stricter execution budget review for core0 main loop scheduling under OLED load.
+Mitigation:
+- Keep counters simple and constant-time; avoid heavy logging in hot paths.
+
+3. Risk:
+- Hidden board-specific factors (USB host stack, cable quality, power noise) can mimic firmware timing faults.
+
+Mitigation:
+- Repeat tests across at least two host ports/cables and one alternate board power path.
+
+## 9) Rollback and Decision Gates
+
+1. After Phase A:
+- If underruns do not correlate with artifacts, pause and reassess root cause before Phase C.
+
+2. After Phase C:
+- If artifacts are materially reduced, keep cadence refactor and avoid deeper changes.
+
+3. After Phase D:
+- If capture impact is negligible, keep capture enabled and avoid unnecessary complexity.
+
+4. If any phase increases complexity without measurable benefit:
+- rollback that phase and keep the simpler variant.

@@ -39,6 +39,42 @@
 #define USB_AUDIO_PULL_CHUNK_FRAMES 64u
 #endif
 
+#ifndef USB_AUDIO_MAX_PULL_CHUNKS_PER_TASK
+#define USB_AUDIO_MAX_PULL_CHUNKS_PER_TASK 8u
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_UPDATE_PERIOD_MS
+#define USB_AUDIO_FEEDBACK_UPDATE_PERIOD_MS 1u
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_AVG_SHIFT
+#define USB_AUDIO_FEEDBACK_AVG_SHIFT 5u
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_ERR_DEADBAND_FRAMES
+#define USB_AUDIO_FEEDBACK_ERR_DEADBAND_FRAMES 2
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_KP_Q16_16
+// Q16.16 proportional gain: 8 = 1/8192 frame-per-USB-frame per 1 frame of ring error.
+#define USB_AUDIO_FEEDBACK_KP_Q16_16 8
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_KI_Q16_16
+// Q16.16 integrator gain: 1 = 1/65536 frame-per-USB-frame per 1 frame of ring error per update.
+#define USB_AUDIO_FEEDBACK_KI_Q16_16 1
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_INT_CLAMP_Q16_16
+// Integrator clamp: +/-0.25 frame per USB frame.
+#define USB_AUDIO_FEEDBACK_INT_CLAMP_Q16_16 (1u << 14)
+#endif
+
+#ifndef USB_AUDIO_FEEDBACK_MAX_DELTA_Q16_16
+// Max correction from nominal feedback: +/-0.25 frame per USB frame.
+#define USB_AUDIO_FEEDBACK_MAX_DELTA_Q16_16 (1u << 14)
+#endif
+
 #if (USB_AUDIO_RING_FRAMES < 128)
 #error "USB_AUDIO_RING_FRAMES too small"
 #endif
@@ -84,7 +120,7 @@ static volatile uint32_t usb_audio_rd_frames;
 // NOTE: Only ring indices are accessed cross-core and need atomics.
 // Avoid C11-style atomics on sub-word types (bool/uint8/uint16) since some ARM targets
 // may implement them with word-exclusive accesses that require alignment.
-static volatile bool usb_audio_streaming;
+static volatile uint32_t usb_audio_streaming;
 
 static volatile uint32_t usb_audio_last_avail_bytes;
 static volatile uint32_t usb_audio_last_rx_bytes;
@@ -92,6 +128,9 @@ static volatile uint32_t usb_audio_overrun_frames;
 static volatile uint32_t usb_audio_underrun_count;
 static volatile uint32_t usb_audio_set_itf_count;
 static volatile uint8_t usb_audio_last_alt_setting;
+static uint32_t usb_audio_ring_fill_min_frames;
+static uint32_t usb_audio_ring_fill_max_frames;
+static bool usb_audio_ring_fill_window_valid;
 
 // Feedback diagnostics (16.16 fixed-point frames per USB frame)
 static volatile uint32_t usb_audio_last_fb_q16_16;
@@ -99,6 +138,7 @@ static volatile uint32_t usb_audio_fb_update_count;
 static uint32_t usb_audio_fb_fill_avg_q16_16;
 static uint32_t usb_audio_fb_last_update_ms;
 static bool usb_audio_fb_state_valid;
+static int32_t usb_audio_fb_i_q16_16;
 
 // Last observed class-specific control request (helps debug host behavior).
 static volatile uint32_t usb_audio_last_req_count;
@@ -121,6 +161,8 @@ static uint8_t mute[3];
 static int16_t volume_q8_8[3]; // 1/256 dB units
 
 static inline uint32_t usb_audio_ring_fill_frames(void);
+static inline void usb_audio_ring_window_reset(uint32_t fill);
+static inline void usb_audio_ring_window_observe(uint32_t fill);
 
 static inline uint32_t usb_audio_nominal_feedback_q16_16(uint32_t sample_rate_hz) {
     // Feedback value is number of audio frames per USB frame in 16.16 format.
@@ -134,15 +176,21 @@ static void usb_audio_feedback_reset_state(void) {
     usb_audio_fb_fill_avg_q16_16 = 0u;
     usb_audio_fb_last_update_ms = 0u;
     usb_audio_fb_state_valid = false;
+    usb_audio_fb_i_q16_16 = 0;
 }
 
 static void usb_audio_update_feedback(void) {
     if (!usb_audio_is_streaming()) return;
     if (!tud_audio_mounted()) return;
 
-    // Update at ~1 kHz max (FS frame rate).
+    // Update less frequently than every loop iteration to reduce control noise.
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-    if (now_ms == usb_audio_fb_last_update_ms) return;
+    if (usb_audio_fb_last_update_ms != 0u) {
+        uint32_t elapsed_ms = (uint32_t)(now_ms - usb_audio_fb_last_update_ms);
+        if (elapsed_ms < (uint32_t)USB_AUDIO_FEEDBACK_UPDATE_PERIOD_MS) {
+            return;
+        }
+    }
     usb_audio_fb_last_update_ms = now_ms;
 
     uint32_t const sample_rate = usb_audio_get_sample_rate();
@@ -154,22 +202,32 @@ static void usb_audio_update_feedback(void) {
         usb_audio_fb_fill_avg_q16_16 = (fill_frames << 16);
         usb_audio_fb_state_valid = true;
     } else {
-        usb_audio_fb_fill_avg_q16_16 = (usb_audio_fb_fill_avg_q16_16 * 31u + (fill_frames << 16)) / 32u;
+        uint32_t const avg_keep = (1u << USB_AUDIO_FEEDBACK_AVG_SHIFT) - 1u;
+        usb_audio_fb_fill_avg_q16_16 =
+            (usb_audio_fb_fill_avg_q16_16 * avg_keep + (fill_frames << 16)) >> USB_AUDIO_FEEDBACK_AVG_SHIFT;
     }
 
     int32_t const fill_avg_frames = (int32_t)(usb_audio_fb_fill_avg_q16_16 >> 16);
     int32_t const target = (int32_t)USB_AUDIO_TARGET_FILL_FRAMES;
-    int32_t const err = target - fill_avg_frames; // + => buffer low => ask host to send faster
+    int32_t err = target - fill_avg_frames; // + => buffer low => ask host to send faster
+    if (err > -(int32_t)USB_AUDIO_FEEDBACK_ERR_DEADBAND_FRAMES &&
+        err < (int32_t)USB_AUDIO_FEEDBACK_ERR_DEADBAND_FRAMES) {
+        err = 0;
+    }
 
-    // Proportional-only controller:
-    // map ~1024 frames error (~21ms at 48k) to ~+/- 1 frame per USB frame.
-    int32_t const k_q16_16 = 64; // (1<<16)/1024
-    int32_t fb = (int32_t)nominal + (err * k_q16_16);
+    int32_t const p_term = err * (int32_t)USB_AUDIO_FEEDBACK_KP_Q16_16;
+    usb_audio_fb_i_q16_16 += err * (int32_t)USB_AUDIO_FEEDBACK_KI_Q16_16;
+    int32_t const i_clamp = (int32_t)USB_AUDIO_FEEDBACK_INT_CLAMP_Q16_16;
+    if (usb_audio_fb_i_q16_16 > i_clamp) usb_audio_fb_i_q16_16 = i_clamp;
+    if (usb_audio_fb_i_q16_16 < -i_clamp) usb_audio_fb_i_q16_16 = -i_clamp;
 
-    // Clamp to nominal +/- 1 frame per USB frame (full-speed packet size bounds).
-    int32_t const one = (1 << 16);
-    int32_t const min_fb = (int32_t)nominal - one;
-    int32_t const max_fb = (int32_t)nominal + one;
+    // PI controller: P reacts quickly, I removes steady-state drift between clocks.
+    int32_t fb = (int32_t)nominal + p_term + usb_audio_fb_i_q16_16;
+
+    // Clamp to nominal +/- configured correction window.
+    int32_t const max_delta = (int32_t)USB_AUDIO_FEEDBACK_MAX_DELTA_Q16_16;
+    int32_t const min_fb = (int32_t)nominal - max_delta;
+    int32_t const max_fb = (int32_t)nominal + max_delta;
     if (fb < min_fb) fb = min_fb;
     if (fb > max_fb) fb = max_fb;
 
@@ -190,9 +248,29 @@ static inline uint32_t usb_audio_ring_free_frames(uint32_t fill) {
     return USB_AUDIO_RING_FRAMES - fill;
 }
 
+static inline void usb_audio_ring_window_reset(uint32_t fill) {
+    usb_audio_ring_fill_min_frames = fill;
+    usb_audio_ring_fill_max_frames = fill;
+    usb_audio_ring_fill_window_valid = true;
+}
+
+static inline void usb_audio_ring_window_observe(uint32_t fill) {
+    if (!usb_audio_ring_fill_window_valid) {
+        usb_audio_ring_window_reset(fill);
+        return;
+    }
+    if (fill < usb_audio_ring_fill_min_frames) {
+        usb_audio_ring_fill_min_frames = fill;
+    }
+    if (fill > usb_audio_ring_fill_max_frames) {
+        usb_audio_ring_fill_max_frames = fill;
+    }
+}
+
 static void usb_audio_ring_reset(void) {
     __atomic_store_n(&usb_audio_wr_frames, 0u, __ATOMIC_RELAXED);
     __atomic_store_n(&usb_audio_rd_frames, 0u, __ATOMIC_RELAXED);
+    usb_audio_ring_window_reset(0u);
 }
 
 static size_t usb_audio_ring_push_i16(const int16_t *src_interleaved, size_t frames) {
@@ -236,7 +314,7 @@ size_t usb_audio_pop_i16(int16_t *dst_interleaved_i16, size_t frames) {
 }
 
 bool usb_audio_is_streaming(void) {
-    return usb_audio_streaming;
+    return __atomic_load_n(&usb_audio_streaming, __ATOMIC_ACQUIRE) != 0u;
 }
 
 uint32_t usb_audio_get_sample_rate(void) {
@@ -253,6 +331,19 @@ uint32_t usb_audio_get_last_rx_bytes(void) {
 
 uint32_t usb_audio_get_ring_fill_frames(void) {
     return usb_audio_ring_fill_frames();
+}
+
+void usb_audio_take_ring_fill_window(uint32_t *out_min_frames, uint32_t *out_max_frames) {
+    if (!out_min_frames || !out_max_frames) return;
+
+    uint32_t current = usb_audio_ring_fill_frames();
+    if (!usb_audio_ring_fill_window_valid) {
+        usb_audio_ring_window_reset(current);
+    }
+
+    *out_min_frames = usb_audio_ring_fill_min_frames;
+    *out_max_frames = usb_audio_ring_fill_max_frames;
+    usb_audio_ring_window_reset(current);
 }
 
 uint32_t usb_audio_get_last_feedback_q16_16(void) {
@@ -305,7 +396,7 @@ uint32_t usb_audio_get_last_req_count(void) {
 
 void usb_audio_init(void) {
     usb_audio_ring_reset();
-    usb_audio_streaming = false;
+    __atomic_store_n(&usb_audio_streaming, 0u, __ATOMIC_RELEASE);
     usb_audio_feedback_reset_state();
 
     memset(mute, 0, sizeof(mute));
@@ -327,12 +418,14 @@ void usb_audio_init(void) {
 
     usb_audio_last_fb_q16_16 = usb_audio_nominal_feedback_q16_16(USB_AUDIO_SAMPLE_RATE_HZ);
     usb_audio_fb_update_count = 0u;
+    usb_audio_ring_fill_window_valid = false;
 }
 
 void usb_audio_task(void) {
     if (!tud_audio_mounted()) {
         usb_audio_last_avail_bytes = 0u;
         usb_audio_last_rx_bytes = 0u;
+        usb_audio_ring_window_reset(0u);
         return;
     }
 
@@ -347,10 +440,12 @@ void usb_audio_task(void) {
     }
 
     uint32_t fill = usb_audio_ring_fill_frames();
+    usb_audio_ring_window_observe(fill);
     uint32_t free_frames = usb_audio_ring_free_frames(fill);
     if (free_frames == 0u) {
         usb_audio_last_rx_bytes = 0u;
         usb_audio_update_feedback();
+        usb_audio_ring_window_observe(fill);
         return;
     }
 
@@ -366,6 +461,7 @@ void usb_audio_task(void) {
     if (to_read_bytes == 0) {
         usb_audio_last_rx_bytes = 0u;
         usb_audio_update_feedback();
+        usb_audio_ring_window_observe(fill);
         return;
     }
 
@@ -373,7 +469,9 @@ void usb_audio_task(void) {
     const uint32_t pull_buf_bytes = (uint32_t)sizeof(pull_buf);
 
     uint32_t total_rx_bytes = 0;
-    while (to_read_bytes > 0) {
+    uint32_t pulled_chunks = 0u;
+    while (to_read_bytes > 0 && pulled_chunks < (uint32_t)USB_AUDIO_MAX_PULL_CHUNKS_PER_TASK) {
+        pulled_chunks++;
         uint32_t chunk_bytes = to_read_bytes;
         if (chunk_bytes > pull_buf_bytes) chunk_bytes = pull_buf_bytes;
         chunk_bytes -= chunk_bytes % bytes_per_frame;
@@ -405,6 +503,7 @@ void usb_audio_task(void) {
 
     usb_audio_last_rx_bytes = total_rx_bytes;
     usb_audio_update_feedback();
+    usb_audio_ring_window_observe(usb_audio_ring_fill_frames());
 }
 
 //--------------------------------------------------------------------+
@@ -437,13 +536,13 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     uint8_t const itf = tu_u16_low(tu_le16toh(p_request->wIndex));
     uint8_t const alt = tu_u16_low(tu_le16toh(p_request->wValue));
 
-    if (itf == USB_AUDIO_ITF_STREAMING) {
-        usb_audio_set_itf_count++;
-        usb_audio_last_alt_setting = alt;
-        if (alt != 0) {
-            tud_audio_clear_ep_out_ff();
-            usb_audio_ring_reset();
-            usb_audio_streaming = true;
+        if (itf == USB_AUDIO_ITF_STREAMING) {
+            usb_audio_set_itf_count++;
+            usb_audio_last_alt_setting = alt;
+            if (alt != 0) {
+                tud_audio_clear_ep_out_ff();
+                usb_audio_ring_reset();
+            __atomic_store_n(&usb_audio_streaming, 1u, __ATOMIC_RELEASE);
             usb_audio_feedback_reset_state();
 
             // Seed feedback so the endpoint starts sending immediately.
@@ -452,11 +551,11 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
             usb_audio_last_fb_q16_16 = nominal;
             usb_audio_fb_update_count = 1u;
         } else {
-            usb_audio_streaming = false;
-            usb_audio_feedback_reset_state();
-            tud_audio_clear_ep_out_ff();
-            usb_audio_ring_reset();
-        }
+                __atomic_store_n(&usb_audio_streaming, 0u, __ATOMIC_RELEASE);
+                usb_audio_feedback_reset_state();
+                tud_audio_clear_ep_out_ff();
+                usb_audio_ring_reset();
+            }
     }
 
     return true;
@@ -471,7 +570,7 @@ bool tud_audio_set_itf_close_EP_cb(uint8_t rhport, tusb_control_request_t const 
 
     if (itf == USB_AUDIO_ITF_STREAMING && alt == 0) {
         usb_audio_last_alt_setting = 0u;
-        usb_audio_streaming = false;
+        __atomic_store_n(&usb_audio_streaming, 0u, __ATOMIC_RELEASE);
         usb_audio_hw_disable_endpoints();
         tud_audio_clear_ep_out_ff();
         usb_audio_ring_reset();

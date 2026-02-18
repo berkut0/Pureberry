@@ -101,7 +101,11 @@ static i2c_bus_result_t oled_queue_full_frame_async(void) {
 
 void oled_backend_flush(void) {
     if (!g_oled_ready) return;
+#if OLED_FLUSH_USE_U8G2_SENDBUFFER
+    u8g2_SendBuffer(&g_u8g2);
+#else
     (void)oled_queue_full_frame_async();
+#endif
 }
 
 static void oled_draw_boot(void) {
@@ -147,11 +151,20 @@ oled_canvas_t *oled_backend_u8g2(void) {
     return &g_u8g2;
 }
 
+bool oled_backend_can_flush(void) {
+#if OLED_FLUSH_USE_U8G2_SENDBUFFER
+    return g_oled_ready;
+#else
+    return g_oled_ready && !g_oled_async_inflight;
+#endif
+}
+
 #else
 
 bool oled_backend_init(void) { return false; }
 bool oled_backend_ready(void) { return false; }
 oled_canvas_t *oled_backend_u8g2(void) { return NULL; }
+bool oled_backend_can_flush(void) { return false; }
 void oled_backend_flush(void) { (void) 0; }
 
 #endif // ENABLE_OLED

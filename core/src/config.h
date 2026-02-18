@@ -79,11 +79,7 @@
 #endif
 
 #ifndef USB_AUDIO_TARGET_FILL_FRAMES
-#ifdef ENABLE_OLED
-#define USB_AUDIO_TARGET_FILL_FRAMES 1024
-#else
 #define USB_AUDIO_TARGET_FILL_FRAMES 512
-#endif
 #endif
 
 // Core1 control-event drain budget per audio block.
@@ -96,6 +92,16 @@
 // Higher values improve glitch tolerance at the cost of output latency.
 #ifndef AUDIO_RUNTIME_USB_PRODUCER_BUFFER_COUNT
 #define AUDIO_RUNTIME_USB_PRODUCER_BUFFER_COUNT 12u
+#endif
+
+// Core1 waveform capture bridge (audio -> display transport publish only).
+// Keep default ON with OLED builds, but expose an explicit switch for clean A/B testing.
+#ifndef AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE
+#  ifdef ENABLE_OLED
+#    define AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE 1
+#  else
+#    define AUDIO_RUNTIME_ENABLE_WAVEFORM_CAPTURE 0
+#  endif
 #endif
 
 // USB bring-up / main-loop timing
@@ -127,6 +133,13 @@
 
 #ifndef UI_SYSTEM_STATS_REFRESH_MS
 #define UI_SYSTEM_STATS_REFRESH_MS 1000
+#endif
+
+// Diagnostic isolation switch:
+// when non-zero and USB Audio streaming is active, core0 skips OLED UI rendering.
+// Useful to separate "display activity causes glitches/noise" from other causes.
+#ifndef UI_DISABLE_OLED_WHILE_USB_AUDIO_STREAMING
+#define UI_DISABLE_OLED_WHILE_USB_AUDIO_STREAMING 0
 #endif
 
 #ifndef UI_INPUT_EVENT_QUEUE_SIZE
@@ -349,6 +362,13 @@
 
 #ifndef OLED_REFRESH_FPS
 #define OLED_REFRESH_FPS 60
+#endif
+
+// OLED flush backend selector:
+// 0 = async DMA transport via i2c_bus_write_async() (default)
+// 1 = legacy u8g2_SendBuffer() path (blocking, chunked by u8g2 backend)
+#ifndef OLED_FLUSH_USE_U8G2_SENDBUFFER
+#define OLED_FLUSH_USE_U8G2_SENDBUFFER 0
 #endif
 
 #ifndef OLED_I2C_BUS_ID
